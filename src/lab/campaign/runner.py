@@ -146,6 +146,7 @@ class CampaignRunner:
         on_step: Callable[[str, Any], None] | None = None,
         researcher_system: str | None = None,
         researcher_prompt: str | None = None,
+        strategy: str | None = None,
     ) -> None:
         self.cfg = cfg
         self.candles = candles
@@ -153,6 +154,7 @@ class CampaignRunner:
         self._on_step = on_step
         self._researcher_system = researcher_system
         self._researcher_prompt = researcher_prompt
+        self._strategy = strategy
 
         # Mutable campaign state — updated after every completed run.
         self._campaign_id: str = ""
@@ -310,6 +312,7 @@ class CampaignRunner:
                 on_step=self._on_step,
                 researcher_system=self._researcher_system,
                 researcher_prompt=self._researcher_prompt,
+                strategy=self._strategy,
             )
             try:
                 result = pipeline.run(run_id, prior_context=prior_context)

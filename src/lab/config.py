@@ -106,6 +106,21 @@ class LabConfig(BaseSettings):
         description="Maximum total LLM calls (including retries) across an entire replay run",
     )
 
+    # --- Strategy ---
+    # A plain-English description of the market pattern or hypothesis to investigate.
+    # When set, it is prepended to the Researcher's prompt on every run so the
+    # agent proposes SMA parameters that are grounded in the stated strategy.
+    # Set via LAB_STRATEGY or LAB_STRATEGY_FILE; CLI --strategy / --strategy-file
+    # take precedence.
+    strategy: Optional[str] = Field(
+        default=None,
+        description="Strategy description to guide the Researcher's parameter choices",
+    )
+    strategy_file: Optional[Path] = Field(
+        default=None,
+        description="Path to a text file containing the strategy description",
+    )
+
     # --- Custom researcher prompts ---
     # Point these at plain-text files to override the built-in researcher
     # instructions without touching the source code.  Leave unset to use

@@ -121,11 +121,28 @@ def main() -> None:
     metavar="FILE",
     help="Path to a text file replacing the built-in researcher user prompt.",
 )
+@click.option(
+    "--strategy",
+    "strategy_text",
+    default=None,
+    metavar="TEXT",
+    help="Strategy hypothesis in plain English.  The Researcher will propose SMA parameters to test it.",
+)
+@click.option(
+    "--strategy-file",
+    "strategy_path",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    metavar="FILE",
+    help="Path to a text file describing the strategy (alternative to --strategy).",
+)
 def research(
     env_file: str | None,
     verbose: bool,
     researcher_system_path: Path | None,
     researcher_prompt_path: Path | None,
+    strategy_text: str | None,
+    strategy_path: Path | None,
 ) -> None:
     """
     Start a bounded autonomous research run.
@@ -186,12 +203,16 @@ def research(
     researcher_prompt = _load_prompt(
         researcher_prompt_path or cfg.researcher_prompt_file, RESEARCHER_PROMPT
     )
+    strategy = _resolve_strategy(strategy_text, strategy_path, cfg.strategy, cfg.strategy_file)
+    if strategy:
+        click.echo(f"  Strategy:  {strategy[:80]}{'...' if len(strategy) > 80 else ''}")
     runner = PipelineRunner(
         cfg,
         load_result.candles,
         on_step=on_step,
         researcher_system=researcher_system,
         researcher_prompt=researcher_prompt,
+        strategy=strategy,
     )
     try:
         result = runner.run(run_id)
@@ -284,6 +305,21 @@ def research(
     metavar="FILE",
     help="Path to a text file replacing the built-in researcher user prompt.",
 )
+@click.option(
+    "--strategy",
+    "strategy_text",
+    default=None,
+    metavar="TEXT",
+    help="Strategy hypothesis in plain English.  The Researcher will propose SMA parameters to test it.",
+)
+@click.option(
+    "--strategy-file",
+    "strategy_path",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    metavar="FILE",
+    help="Path to a text file describing the strategy.",
+)
 def campaign(
     max_runs: int | None,
     max_calls: int | None,
@@ -292,6 +328,8 @@ def campaign(
     verbose: bool,
     researcher_system_path: Path | None,
     researcher_prompt_path: Path | None,
+    strategy_text: str | None,
+    strategy_path: Path | None,
 ) -> None:
     """
     Run an autonomous multi-run research campaign.
@@ -351,6 +389,9 @@ def campaign(
     researcher_prompt = _load_prompt(
         researcher_prompt_path or cfg.researcher_prompt_file, RESEARCHER_PROMPT
     )
+    strategy = _resolve_strategy(strategy_text, strategy_path, cfg.strategy, cfg.strategy_file)
+    if strategy:
+        click.echo(f"  Strategy:   {strategy[:80]}{'...' if len(strategy) > 80 else ''}")
     runner = CampaignRunner(
         cfg,
         load_result.candles,
@@ -358,6 +399,7 @@ def campaign(
         on_step=on_step,
         researcher_system=researcher_system,
         researcher_prompt=researcher_prompt,
+        strategy=strategy,
     )
 
     try:
@@ -501,6 +543,21 @@ def _print_campaign_summary(result: CampaignResult) -> None:
     metavar="FILE",
     help="Path to a text file replacing the built-in replay researcher user prompt.",
 )
+@click.option(
+    "--strategy",
+    "strategy_text",
+    default=None,
+    metavar="TEXT",
+    help="Strategy hypothesis in plain English.  The Researcher will propose SMA parameters to test it.",
+)
+@click.option(
+    "--strategy-file",
+    "strategy_path",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    metavar="FILE",
+    help="Path to a text file describing the strategy.",
+)
 def replay(
     window_size: int | None,
     step_size: int | None,
@@ -510,6 +567,8 @@ def replay(
     verbose: bool,
     researcher_system_path: Path | None,
     researcher_prompt_path: Path | None,
+    strategy_text: str | None,
+    strategy_path: Path | None,
 ) -> None:
     """
     Walk-forward historical replay with multi-horizon experiment.
@@ -578,6 +637,11 @@ def replay(
     click.echo(f"  Per-window: up to {cfg.max_ollama_calls} calls")
     click.echo(f"  Model:      {cfg.default_model}")
     click.echo(f"  Ollama:     {cfg.ollama_base_url}")
+    _replay_strategy = _resolve_strategy(
+        strategy_text, strategy_path, cfg.strategy, cfg.strategy_file
+    )
+    if _replay_strategy:
+        click.echo(f"  Strategy:   {_replay_strategy[:80]}{'...' if len(_replay_strategy) > 80 else ''}")
 
     # ── Initialise DB and replay run ──────────────────────────────────────────
     conn = init_db(cfg.db_path)
@@ -636,6 +700,9 @@ def replay(
             researcher_prompt_path or cfg.replay_researcher_prompt_file,
             REPLAY_RESEARCHER_PROMPT,
         )
+        replay_strategy = _resolve_strategy(
+            strategy_text, strategy_path, cfg.strategy, cfg.strategy_file
+        )
         runner = ReplayPipelineRunner(
             cfg,
             step,
@@ -643,6 +710,7 @@ def replay(
             on_step=replay_on_step,
             researcher_system=replay_researcher_system,
             researcher_prompt=replay_researcher_prompt,
+            strategy=replay_strategy,
         )
         try:
             result = runner.run()
@@ -1162,6 +1230,24 @@ def _load_prompt(path: Path | None, default: str) -> str:
     if path is None:
         return default
     return path.read_text(encoding="utf-8")
+
+
+def _resolve_strategy(
+    strategy_text: str | None,
+    strategy_path: Path | None,
+    cfg_strategy: str | None,
+    cfg_strategy_file: Path | None,
+) -> str | None:
+    """Return the strategy string from the highest-priority source, or None."""
+    if strategy_text:
+        return strategy_text.strip()
+    if strategy_path:
+        return strategy_path.read_text(encoding="utf-8").strip()
+    if cfg_strategy:
+        return cfg_strategy.strip()
+    if cfg_strategy_file:
+        return cfg_strategy_file.read_text(encoding="utf-8").strip()
+    return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────

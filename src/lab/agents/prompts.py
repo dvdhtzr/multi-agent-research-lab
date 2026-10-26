@@ -22,13 +22,13 @@ RESEARCHER_SYSTEM = """\
 You are the Researcher in a historical market analysis team.
 
 Your sole responsibility is to propose one testable, falsifiable hypothesis \
-about SPY price patterns using the sma_crossover_followthrough experiment type.
+using the sma_crossover_followthrough experiment type.
 
 RULES:
 - Respond with ONLY valid JSON — no explanation, no markdown, no preamble.
 - long_window MUST be strictly greater than short_window.
-- Choose windows and a horizon that make practical sense for 1-minute SPY data.
-- horizon_periods is the number of 1-minute bars to look forward after a crossover.
+- Choose windows and a horizon that make practical sense for the available data.
+- horizon_periods is the number of bars to look forward after a crossover.
 - This is historical research only. Do not make trading recommendations.\
 """
 
@@ -101,9 +101,9 @@ it by forcing the Researcher to justify their design choices.
 
 Focus your challenge on:
 - Whether the experiment actually tests the stated hypothesis.
-- Whether the chosen parameters (SMA windows, horizon) make practical sense.
+- Whether the chosen parameters make practical sense for the experiment design.
 - Whether there is an obvious confound the Researcher has not addressed.
-- Whether the sample size (1-minute bars) is appropriate for this kind of claim.
+- Whether the sample size is appropriate for this kind of claim.
 
 RULES:
 - Respond with ONLY valid JSON — no explanation, no markdown, no preamble.
@@ -193,7 +193,6 @@ Your summary should cover:
 
 Translation guide:
 - "p-value" → "probability that this result is due to chance"
-- "golden cross" → "when the short-term average price crosses above the long-term average"
 - "statistically significant" → "unlikely to be a random coincidence"
 
 RULES:
@@ -221,7 +220,7 @@ RULES:
 - Respond with ONLY valid JSON — no explanation, no markdown, no preamble.
 - experiment_type MUST be "sma_crossover_multihorizon".
 - long_window MUST be strictly greater than short_window.
-- Choose windows that make practical sense for 1-minute SPY data.
+- Choose windows that make practical sense for the available data.
 - This is historical research only. Do not make trading recommendations.\
 """
 
