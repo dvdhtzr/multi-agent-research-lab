@@ -94,12 +94,16 @@ class ReplayPipelineRunner:
         step: ReplayStep,
         budget: int | None = None,
         on_step: Callable[[str, Any], None] | None = None,
+        researcher_system: str | None = None,
+        researcher_prompt: str | None = None,
     ) -> None:
         self._cfg = cfg
         self._step = step
         self._calls_used = 0
         self._budget = budget if budget is not None else cfg.max_ollama_calls
         self._on_step = on_step
+        self._researcher_system = researcher_system or REPLAY_RESEARCHER_SYSTEM
+        self._researcher_prompt = researcher_prompt or REPLAY_RESEARCHER_PROMPT
 
         raw_client = openai.OpenAI(
             base_url=f"{cfg.ollama_base_url}/v1",
@@ -119,7 +123,7 @@ class ReplayPipelineRunner:
         # ── [1] Researcher ────────────────────────────────────────────────────
         horizons_str = ", ".join(str(h) for h in self._cfg.replay_horizons)
         researcher_user = (
-            REPLAY_RESEARCHER_PROMPT.format(
+            self._researcher_prompt.format(
                 window_size=step.window_size,
                 step_index=step.step_index + 1,
                 total_steps="?",
@@ -127,7 +131,7 @@ class ReplayPipelineRunner:
             + f"\n\nFixed horizons (bars): {horizons_str}"
         )
         researcher_out: ReplayResearcherOutput = self._call(
-            REPLAY_RESEARCHER_SYSTEM,
+            self._researcher_system,
             researcher_user,
             ReplayResearcherOutput,
         )

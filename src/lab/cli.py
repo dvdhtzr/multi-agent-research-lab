@@ -30,6 +30,12 @@ from pathlib import Path
 
 import click
 
+from lab.agents.prompts import (
+    RESEARCHER_SYSTEM,
+    RESEARCHER_PROMPT,
+    REPLAY_RESEARCHER_SYSTEM,
+    REPLAY_RESEARCHER_PROMPT,
+)
 from lab.campaign.runner import CampaignResult, CampaignRunner
 from lab.config import LabConfig, load_config
 from lab.data.loader import load_csv, validate_partition_size
@@ -99,7 +105,28 @@ def main() -> None:
     default=False,
     help="Print each agent's deliberation as it completes.",
 )
-def research(env_file: str | None, verbose: bool) -> None:
+@click.option(
+    "--researcher-system",
+    "researcher_system_path",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    metavar="FILE",
+    help="Path to a text file replacing the built-in researcher system prompt.",
+)
+@click.option(
+    "--researcher-prompt",
+    "researcher_prompt_path",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    metavar="FILE",
+    help="Path to a text file replacing the built-in researcher user prompt.",
+)
+def research(
+    env_file: str | None,
+    verbose: bool,
+    researcher_system_path: Path | None,
+    researcher_prompt_path: Path | None,
+) -> None:
     """
     Start a bounded autonomous research run.
 
@@ -153,7 +180,19 @@ def research(env_file: str | None, verbose: bool) -> None:
     click.echo("  (This may take 1–5 minutes while the models run.)\n")
 
     on_step = _make_verbose_callback() if verbose else None
-    runner = PipelineRunner(cfg, load_result.candles, on_step=on_step)
+    researcher_system = _load_prompt(
+        researcher_system_path or cfg.researcher_system_file, RESEARCHER_SYSTEM
+    )
+    researcher_prompt = _load_prompt(
+        researcher_prompt_path or cfg.researcher_prompt_file, RESEARCHER_PROMPT
+    )
+    runner = PipelineRunner(
+        cfg,
+        load_result.candles,
+        on_step=on_step,
+        researcher_system=researcher_system,
+        researcher_prompt=researcher_prompt,
+    )
     try:
         result = runner.run(run_id)
     except BudgetExceededError as exc:
@@ -229,12 +268,30 @@ def research(env_file: str | None, verbose: bool) -> None:
     default=False,
     help="Print each agent's deliberation as it completes.",
 )
+@click.option(
+    "--researcher-system",
+    "researcher_system_path",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    metavar="FILE",
+    help="Path to a text file replacing the built-in researcher system prompt.",
+)
+@click.option(
+    "--researcher-prompt",
+    "researcher_prompt_path",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    metavar="FILE",
+    help="Path to a text file replacing the built-in researcher user prompt.",
+)
 def campaign(
     max_runs: int | None,
     max_calls: int | None,
     resume: str | None,
     env_file: str | None,
     verbose: bool,
+    researcher_system_path: Path | None,
+    researcher_prompt_path: Path | None,
 ) -> None:
     """
     Run an autonomous multi-run research campaign.
@@ -288,7 +345,20 @@ def campaign(
     click.echo(f"  Ollama:     {cfg.ollama_base_url}")
 
     on_step = _make_verbose_callback() if verbose else None
-    runner = CampaignRunner(cfg, load_result.candles, conn, on_step=on_step)
+    researcher_system = _load_prompt(
+        researcher_system_path or cfg.researcher_system_file, RESEARCHER_SYSTEM
+    )
+    researcher_prompt = _load_prompt(
+        researcher_prompt_path or cfg.researcher_prompt_file, RESEARCHER_PROMPT
+    )
+    runner = CampaignRunner(
+        cfg,
+        load_result.candles,
+        conn,
+        on_step=on_step,
+        researcher_system=researcher_system,
+        researcher_prompt=researcher_prompt,
+    )
 
     try:
         if resume:
@@ -415,6 +485,22 @@ def _print_campaign_summary(result: CampaignResult) -> None:
     default=False,
     help="Print each agent's deliberation as it completes.",
 )
+@click.option(
+    "--researcher-system",
+    "researcher_system_path",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    metavar="FILE",
+    help="Path to a text file replacing the built-in replay researcher system prompt.",
+)
+@click.option(
+    "--researcher-prompt",
+    "researcher_prompt_path",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    metavar="FILE",
+    help="Path to a text file replacing the built-in replay researcher user prompt.",
+)
 def replay(
     window_size: int | None,
     step_size: int | None,
@@ -422,6 +508,8 @@ def replay(
     max_calls: int | None,
     env_file: str | None,
     verbose: bool,
+    researcher_system_path: Path | None,
+    researcher_prompt_path: Path | None,
 ) -> None:
     """
     Walk-forward historical replay with multi-horizon experiment.
@@ -540,7 +628,22 @@ def replay(
                 f"({step.timestamp_start.strftime('%Y-%m-%d %H:%M')} → "
                 f"{step.timestamp_end.strftime('%Y-%m-%d %H:%M')})"
             )
-        runner = ReplayPipelineRunner(cfg, step, budget=per_step_budget, on_step=replay_on_step)
+        replay_researcher_system = _load_prompt(
+            researcher_system_path or cfg.replay_researcher_system_file,
+            REPLAY_RESEARCHER_SYSTEM,
+        )
+        replay_researcher_prompt = _load_prompt(
+            researcher_prompt_path or cfg.replay_researcher_prompt_file,
+            REPLAY_RESEARCHER_PROMPT,
+        )
+        runner = ReplayPipelineRunner(
+            cfg,
+            step,
+            budget=per_step_budget,
+            on_step=replay_on_step,
+            researcher_system=replay_researcher_system,
+            researcher_prompt=replay_researcher_prompt,
+        )
         try:
             result = runner.run()
         except BudgetExceededError as exc:
@@ -1052,6 +1155,13 @@ def _print_summary(result: PipelineResult) -> None:
 
 def _error(message: str) -> None:
     click.echo(click.style(f"\n  ✗ {message}", fg="red"), err=True)
+
+
+def _load_prompt(path: Path | None, default: str) -> str:
+    """Return file contents if path is given, otherwise return the default string."""
+    if path is None:
+        return default
+    return path.read_text(encoding="utf-8")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -106,6 +106,30 @@ class LabConfig(BaseSettings):
         description="Maximum total LLM calls (including retries) across an entire replay run",
     )
 
+    # --- Custom researcher prompts ---
+    # Point these at plain-text files to override the built-in researcher
+    # instructions without touching the source code.  Leave unset to use
+    # the defaults in lab/agents/prompts.py.
+    #
+    # The main pipeline and campaign use researcher_system_file /
+    # researcher_prompt_file.  The replay pipeline uses the replay_* variants.
+    researcher_system_file: Optional[Path] = Field(
+        default=None,
+        description="Path to a text file containing a custom RESEARCHER_SYSTEM prompt",
+    )
+    researcher_prompt_file: Optional[Path] = Field(
+        default=None,
+        description="Path to a text file containing a custom RESEARCHER_PROMPT",
+    )
+    replay_researcher_system_file: Optional[Path] = Field(
+        default=None,
+        description="Path to a text file containing a custom REPLAY_RESEARCHER_SYSTEM prompt",
+    )
+    replay_researcher_prompt_file: Optional[Path] = Field(
+        default=None,
+        description="Path to a text file containing a custom REPLAY_RESEARCHER_PROMPT",
+    )
+
     # --- Comparison settings (Milestone 5) ---
     # compare_n_samples: number of parameter draws for baseline + single-agent.
     # compare_llm_budget: total LLM calls for the single-agent and multi-agent arms.

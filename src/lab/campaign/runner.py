@@ -144,11 +144,15 @@ class CampaignRunner:
         candles: list[OHLCVCandle],
         conn: sqlite3.Connection,
         on_step: Callable[[str, Any], None] | None = None,
+        researcher_system: str | None = None,
+        researcher_prompt: str | None = None,
     ) -> None:
         self.cfg = cfg
         self.candles = candles
         self.conn = conn
         self._on_step = on_step
+        self._researcher_system = researcher_system
+        self._researcher_prompt = researcher_prompt
 
         # Mutable campaign state — updated after every completed run.
         self._campaign_id: str = ""
@@ -300,7 +304,13 @@ class CampaignRunner:
                     status="partial",
                 ))
 
-            pipeline = PipelineRunner(run_cfg, self.candles, on_step=self._on_step)
+            pipeline = PipelineRunner(
+                run_cfg,
+                self.candles,
+                on_step=self._on_step,
+                researcher_system=self._researcher_system,
+                researcher_prompt=self._researcher_prompt,
+            )
             try:
                 result = pipeline.run(run_id, prior_context=prior_context)
             except BudgetExceededError as exc:

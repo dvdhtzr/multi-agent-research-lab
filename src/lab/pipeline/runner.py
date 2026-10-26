@@ -142,10 +142,14 @@ class PipelineRunner:
         cfg: LabConfig,
         candles: list[OHLCVCandle],
         on_step: Callable[[str, Any], None] | None = None,
+        researcher_system: str | None = None,
+        researcher_prompt: str | None = None,
     ) -> None:
         self.cfg = cfg
         self.candles = candles
         self._on_step = on_step
+        self._researcher_system = researcher_system or RESEARCHER_SYSTEM
+        self._researcher_prompt = researcher_prompt or RESEARCHER_PROMPT
         # instructor wraps the Ollama OpenAI-compatible client and handles
         # structured-output enforcement and retries.
         #
@@ -182,13 +186,13 @@ class PipelineRunner:
         self._calls_used = 0
         self._start_time = time.monotonic()
 
-        researcher_prompt = RESEARCHER_PROMPT
+        researcher_prompt = self._researcher_prompt
         if prior_context:
-            researcher_prompt = f"{RESEARCHER_PROMPT}\n\n{prior_context}"
+            researcher_prompt = f"{self._researcher_prompt}\n\n{prior_context}"
 
         # ── Step 1: Researcher ────────────────────────────────────────────────
         researcher_out: ResearcherOutput = self._call(
-            RESEARCHER_SYSTEM,
+            self._researcher_system,
             researcher_prompt,
             ResearcherOutput,
         )
