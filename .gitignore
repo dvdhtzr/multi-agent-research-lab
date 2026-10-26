@@ -1,0 +1,48 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+venv/
+env/
+
+# --- Project-specific ---
+# Never commit the local config (may contain model names, paths, or future secrets)
+config.yaml
+config.yml
+.env
+
+# Never commit the research database (contains experiment results — not source code)
+*.db
+*.sqlite
+*.sqlite3
+
+# Never commit private market data CSVs
+data/private/
+data/*.csv
+# Allow the checked-in synthetic sample
+!data/synthetic/spy_sample.csv
+
+# --- Test artifacts ---
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+
+# --- IDE ---
+.vscode/
+.idea/
+.vs/
+*.swp
+*.swo
+
+# --- OS ---
+.DS_Store
+Thumbs.db

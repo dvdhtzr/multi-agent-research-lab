@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spy-research-lab"
+version = "0.1.0"
+description = "Local multi-agent historical market research laboratory (educational portfolio project)"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+dependencies = [
+    # instructor enforces typed, Pydantic-validated responses from any LLM.
+    # It wraps the OpenAI client and retries on validation failures.
+    # C# parallel: a typed HTTP client with automatic deserialization and
+    # retry-on-schema-mismatch — similar to Refit + Polly.
+    "instructor>=1.4.0",
+
+    # OpenAI Python client — used here to talk to Ollama's OpenAI-compatible
+    # REST API at http://localhost:11434/v1.  No OpenAI account required.
+    # C# parallel: the low-level HttpClient that instructor sits on top of.
+    "openai>=1.60.0",
+
+    # Pydantic v2: data validation and settings. Used for agent output schemas,
+    # experiment parameter models, and configuration.
+    # C# parallel: data annotations + FluentValidation + Options<T>, all in one.
+    "pydantic>=2.7.0",
+    "pydantic-settings>=2.2.0",
+
+    # CLI framework.
+    # C# parallel: System.CommandLine or Cocona.
+    "click>=8.1.0",
+
+    # Statistical testing. Used only for scipy.stats.binomtest.
+    # License: BSD-3-Clause (compatible with public repository distribution).
+    "scipy>=1.13.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+]
+
+# Installs `lab` as a runnable command after `pip install -e .`
+# Also allows `python -m lab` via src/lab/__main__.py.
+[project.scripts]
+lab = "lab.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+# asyncio_mode = "auto" means pytest-asyncio automatically treats async test
+# functions as coroutines — you don't need @pytest.mark.asyncio on every one.
+asyncio_mode = "auto"
+testpaths = ["tests"]
+# Show a short summary of all failures at the end.
+addopts = "-v --tb=short"
