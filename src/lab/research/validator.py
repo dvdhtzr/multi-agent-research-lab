@@ -51,7 +51,7 @@ ALLOWED_EXPERIMENTS: dict[str, ExperimentSpec] = {
         description=(
             "Measures the proportion of SMA golden-cross events (short SMA "
             "crossing above long SMA) that are followed by positive returns "
-            "after a specified number of 1-minute bars.  Tests whether this "
+            "after a specified number of bars.  Tests whether this "
             "rate is significantly greater than random chance (p=0.5)."
         ),
         parameters=[

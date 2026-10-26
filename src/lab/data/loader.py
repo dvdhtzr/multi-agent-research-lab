@@ -73,7 +73,7 @@ REQUIRED_COLUMNS = {"timestamp", "open", "high", "low", "close", "volume"}
 
 def load_csv(path: Path, strict: bool = False) -> LoadResult:
     """
-    Load a CSV file of 1-minute OHLCV candles.
+    Load a CSV file of OHLCV candles.
 
     Args:
         path:   Path to the CSV file.

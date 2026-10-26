@@ -1,5 +1,5 @@
 """
-Console entry point for the SPY Research Lab.
+Console entry point for the Multi-Agent Research Lab.
 
 Commands:
   research  — start a bounded autonomous research run
@@ -86,7 +86,7 @@ from lab.db.repository import (
 
 @click.group()
 def main() -> None:
-    """SPY Research Lab — local multi-agent historical research."""
+    """Multi-Agent Research Lab — local multi-agent historical market research."""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -98,6 +98,14 @@ def main() -> None:
     "--env-file",
     default=None,
     help="Path to a .env configuration file.  Defaults to .env in the working directory.",
+)
+@click.option(
+    "--data-file",
+    "data_file",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    metavar="FILE",
+    help="Path to an OHLCV CSV file.  Overrides LAB_DATA_PATH.",
 )
 @click.option(
     "--verbose", "-v",
@@ -138,6 +146,7 @@ def main() -> None:
 )
 def research(
     env_file: str | None,
+    data_file: Path | None,
     verbose: bool,
     researcher_system_path: Path | None,
     researcher_prompt_path: Path | None,
@@ -151,9 +160,11 @@ def research(
     Ollama, persists the result to SQLite, and prints a summary.
     """
     cfg = load_config(env_file)
+    if data_file is not None:
+        cfg = cfg.model_copy(update={"data_path": data_file})
 
     click.echo("═" * 60)
-    click.echo("  SPY Research Lab — Research Run")
+    click.echo("  Multi-Agent Research Lab — Research Run")
     click.echo("═" * 60)
 
     # ── 1. Load data ─────────────────────────────────────────────────────────
@@ -284,6 +295,14 @@ def research(
     help="Path to a .env configuration file.",
 )
 @click.option(
+    "--data-file",
+    "data_file",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    metavar="FILE",
+    help="Path to an OHLCV CSV file.  Overrides LAB_DATA_PATH.",
+)
+@click.option(
     "--verbose", "-v",
     is_flag=True,
     default=False,
@@ -325,6 +344,7 @@ def campaign(
     max_calls: int | None,
     resume: str | None,
     env_file: str | None,
+    data_file: Path | None,
     verbose: bool,
     researcher_system_path: Path | None,
     researcher_prompt_path: Path | None,
@@ -344,13 +364,15 @@ def campaign(
     cfg = load_config(env_file)
 
     # Apply CLI overrides on top of config defaults.
+    if data_file is not None:
+        cfg = cfg.model_copy(update={"data_path": data_file})
     if max_runs is not None:
         cfg = cfg.model_copy(update={"max_campaign_runs": max_runs})
     if max_calls is not None:
         cfg = cfg.model_copy(update={"max_campaign_calls": max_calls})
 
     click.echo("═" * 60)
-    click.echo("  SPY Research Lab — Autonomous Campaign")
+    click.echo("  Multi-Agent Research Lab — Autonomous Campaign")
     click.echo("═" * 60)
 
     # ── Load data ─────────────────────────────────────────────────────────────
@@ -522,6 +544,14 @@ def _print_campaign_summary(result: CampaignResult) -> None:
 )
 @click.option("--env-file", default=None, help="Path to a .env configuration file.")
 @click.option(
+    "--data-file",
+    "data_file",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    metavar="FILE",
+    help="Path to an OHLCV CSV file.  Overrides LAB_DATA_PATH.",
+)
+@click.option(
     "--verbose", "-v",
     is_flag=True,
     default=False,
@@ -564,6 +594,7 @@ def replay(
     horizons: str | None,
     max_calls: int | None,
     env_file: str | None,
+    data_file: Path | None,
     verbose: bool,
     researcher_system_path: Path | None,
     researcher_prompt_path: Path | None,
@@ -582,6 +613,8 @@ def replay(
     """
     cfg = load_config(env_file)
 
+    if data_file is not None:
+        cfg = cfg.model_copy(update={"data_path": data_file})
     if window_size is not None:
         cfg = cfg.model_copy(update={"replay_window_size": window_size})
     if step_size is not None:
@@ -593,7 +626,7 @@ def replay(
         cfg = cfg.model_copy(update={"max_replay_calls": max_calls})
 
     click.echo("═" * 60)
-    click.echo("  SPY Research Lab — Walk-Forward Replay")
+    click.echo("  Multi-Agent Research Lab — Walk-Forward Replay")
     click.echo("═" * 60)
 
     # ── Load data ─────────────────────────────────────────────────────────────
@@ -870,10 +903,19 @@ def _print_replay_summary(
     help="Total LLM call budget for single-agent and multi-agent arms.  Defaults to LAB_COMPARE_LLM_BUDGET (60).",
 )
 @click.option("--env-file", default=None, help="Path to a .env configuration file.")
+@click.option(
+    "--data-file",
+    "data_file",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    metavar="FILE",
+    help="Path to an OHLCV CSV file.  Overrides LAB_DATA_PATH.",
+)
 def compare(
     n_samples: int | None,
     llm_budget: int | None,
     env_file: str | None,
+    data_file: Path | None,
 ) -> None:
     """
     Compare baseline vs single-agent vs multi-agent research approaches.
@@ -890,13 +932,15 @@ def compare(
     """
     cfg = load_config(env_file)
 
+    if data_file is not None:
+        cfg = cfg.model_copy(update={"data_path": data_file})
     if n_samples is not None:
         cfg = cfg.model_copy(update={"compare_n_samples": n_samples})
     if llm_budget is not None:
         cfg = cfg.model_copy(update={"compare_llm_budget": llm_budget})
 
     click.echo("═" * 60)
-    click.echo("  SPY Research Lab — Comparative Evaluation")
+    click.echo("  Multi-Agent Research Lab — Comparative Evaluation")
     click.echo("═" * 60)
 
     # ── Load data ─────────────────────────────────────────────────────────────
