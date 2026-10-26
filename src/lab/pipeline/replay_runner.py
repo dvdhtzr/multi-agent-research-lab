@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from typing import Any, Callable
 
 import instructor
 import openai
@@ -92,11 +93,13 @@ class ReplayPipelineRunner:
         cfg: LabConfig,
         step: ReplayStep,
         budget: int | None = None,
+        on_step: Callable[[str, Any], None] | None = None,
     ) -> None:
         self._cfg = cfg
         self._step = step
         self._calls_used = 0
         self._budget = budget if budget is not None else cfg.max_ollama_calls
+        self._on_step = on_step
 
         raw_client = openai.OpenAI(
             base_url=f"{cfg.ollama_base_url}/v1",
@@ -128,6 +131,8 @@ class ReplayPipelineRunner:
             researcher_user,
             ReplayResearcherOutput,
         )
+        if self._on_step:
+            self._on_step("researcher", researcher_out)
         params = researcher_out.experiment_params
 
         # ── [2] Deterministic experiment ──────────────────────────────────────
@@ -145,6 +150,8 @@ class ReplayPipelineRunner:
             "method": exp_dispatch["method"],
             "candles_used": exp_dispatch["candles_used"],
         }
+        if self._on_step:
+            self._on_step("experiment", exp_result)
 
         # ── [3] Judge ─────────────────────────────────────────────────────────
         horizons_evidence = "\n".join(
@@ -166,6 +173,8 @@ class ReplayPipelineRunner:
             judge_user,
             ReplayJudgeOutput,
         )
+        if self._on_step:
+            self._on_step("judge", judge_out)
 
         # ── [4] Recommender ───────────────────────────────────────────────────
         rec_user = (
@@ -179,6 +188,8 @@ class ReplayPipelineRunner:
             rec_user,
             ReplayRecommenderOutput,
         )
+        if self._on_step:
+            self._on_step("recommender", rec_out)
 
         # ── [5] Summarizer ────────────────────────────────────────────────────
         summary_user = (
@@ -192,6 +203,8 @@ class ReplayPipelineRunner:
             summary_user,
             ReplaySummarizerOutput,
         )
+        if self._on_step:
+            self._on_step("summarizer", summary_out)
 
         return ReplayStepResult(
             step_index=step.step_index,

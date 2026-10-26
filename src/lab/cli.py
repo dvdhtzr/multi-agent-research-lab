@@ -93,7 +93,13 @@ def main() -> None:
     default=None,
     help="Path to a .env configuration file.  Defaults to .env in the working directory.",
 )
-def research(env_file: str | None) -> None:
+@click.option(
+    "--verbose", "-v",
+    is_flag=True,
+    default=False,
+    help="Print each agent's deliberation as it completes.",
+)
+def research(env_file: str | None, verbose: bool) -> None:
     """
     Start a bounded autonomous research run.
 
@@ -146,7 +152,8 @@ def research(env_file: str | None) -> None:
     click.echo(f"  Ollama: {cfg.ollama_base_url}")
     click.echo("  (This may take 1–5 minutes while the models run.)\n")
 
-    runner = PipelineRunner(cfg, load_result.candles)
+    on_step = _make_verbose_callback() if verbose else None
+    runner = PipelineRunner(cfg, load_result.candles, on_step=on_step)
     try:
         result = runner.run(run_id)
     except BudgetExceededError as exc:
@@ -216,11 +223,18 @@ def research(env_file: str | None) -> None:
     default=None,
     help="Path to a .env configuration file.",
 )
+@click.option(
+    "--verbose", "-v",
+    is_flag=True,
+    default=False,
+    help="Print each agent's deliberation as it completes.",
+)
 def campaign(
     max_runs: int | None,
     max_calls: int | None,
     resume: str | None,
     env_file: str | None,
+    verbose: bool,
 ) -> None:
     """
     Run an autonomous multi-run research campaign.
@@ -273,7 +287,8 @@ def campaign(
     click.echo(f"  Per-run:    up to {cfg.max_ollama_calls} calls, {cfg.max_wall_clock_seconds}s")
     click.echo(f"  Ollama:     {cfg.ollama_base_url}")
 
-    runner = CampaignRunner(cfg, load_result.candles, conn)
+    on_step = _make_verbose_callback() if verbose else None
+    runner = CampaignRunner(cfg, load_result.candles, conn, on_step=on_step)
 
     try:
         if resume:
@@ -394,12 +409,19 @@ def _print_campaign_summary(result: CampaignResult) -> None:
     help="Total LLM call budget across all windows.  Defaults to LAB_MAX_REPLAY_CALLS (200).",
 )
 @click.option("--env-file", default=None, help="Path to a .env configuration file.")
+@click.option(
+    "--verbose", "-v",
+    is_flag=True,
+    default=False,
+    help="Print each agent's deliberation as it completes.",
+)
 def replay(
     window_size: int | None,
     step_size: int | None,
     horizons: str | None,
     max_calls: int | None,
     env_file: str | None,
+    verbose: bool,
 ) -> None:
     """
     Walk-forward historical replay with multi-horizon experiment.
@@ -507,7 +529,18 @@ def replay(
             final_status = "budget_exhausted"
             break
 
-        runner = ReplayPipelineRunner(cfg, step, budget=per_step_budget)
+        replay_on_step = (
+            _make_verbose_callback(_REPLAY_STEP_LABELS) if verbose else None
+        )
+        if verbose:
+            click.echo(
+                f"\n{'─' * 60}\n"
+                f"  Window {step.step_index + 1}/{total_steps}  "
+                f"candles {step.window_start}–{step.window_end}  "
+                f"({step.timestamp_start.strftime('%Y-%m-%d %H:%M')} → "
+                f"{step.timestamp_end.strftime('%Y-%m-%d %H:%M')})"
+            )
+        runner = ReplayPipelineRunner(cfg, step, budget=per_step_budget, on_step=replay_on_step)
         try:
             result = runner.run()
         except BudgetExceededError as exc:
@@ -1019,3 +1052,107 @@ def _print_summary(result: PipelineResult) -> None:
 
 def _error(message: str) -> None:
     click.echo(click.style(f"\n  ✗ {message}", fg="red"), err=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Verbose step printer
+# ─────────────────────────────────────────────────────────────────────────────
+
+_STEP_LABELS = {
+    "researcher":          ("[1] RESEARCHER",          "cyan"),
+    "devils_advocate":     ("[2] DEVIL'S ADVOCATE",    "yellow"),
+    "researcher_rebuttal": ("[3] RESEARCHER REBUTTAL", "cyan"),
+    "experiment":          ("[4] EXPERIMENT",          "blue"),
+    "detractor":           ("[5] DETRACTOR",           "yellow"),
+    "judge":               ("[6] JUDGE",               "magenta"),
+    "recommender":         ("[7] RECOMMENDER",         "white"),
+    "summarizer":          ("[8] SUMMARIZER",          "white"),
+}
+
+# Replay uses a 5-step pipeline
+_REPLAY_STEP_LABELS = {
+    "researcher": ("[1] RESEARCHER",   "cyan"),
+    "experiment": ("[2] EXPERIMENT",   "blue"),
+    "judge":      ("[3] JUDGE",        "magenta"),
+    "recommender":("[4] RECOMMENDER",  "white"),
+    "summarizer": ("[5] SUMMARIZER",   "white"),
+}
+
+
+def _verbose_on_step(step_name: str, output, labels: dict = _STEP_LABELS) -> None:
+    """Print one agent step's output to the console."""
+    label, colour = labels.get(step_name, (step_name.upper(), "white"))
+    click.echo("\n  " + click.style(f"▶ {label}", fg=colour, bold=True))
+
+    if step_name == "researcher":
+        params = output.experiment_params
+        click.echo(f"    Hypothesis: {output.hypothesis_statement}")
+        click.echo(
+            f"    Params: short={params.short_window}, "
+            f"long={params.long_window}"
+            + (f", horizon={params.horizon_periods}" if hasattr(params, 'horizon_periods') else "")
+        )
+
+    elif step_name == "devils_advocate":
+        click.echo(f"    Objection ({output.confidence:.0%}): {output.objection}")
+        click.echo(f"    Targeted assumption: {output.targeted_assumption}")
+
+    elif step_name == "researcher_rebuttal":
+        concedes = click.style("concedes point", fg="yellow") if output.concedes_point else "stands firm"
+        click.echo(f"    Stance: {concedes}")
+        click.echo(f"    {output.rebuttal}")
+
+    elif step_name == "experiment":
+        # output is a dict here (from run_experiment dispatcher or MultiHorizonResult)
+        if "horizons" in output:
+            # multi-horizon (replay)
+            click.echo(f"    Multi-horizon results:")
+            for h in output.get("horizons", []):
+                sig = click.style("✓ sig", fg="green") if h.get("statistically_significant") else "✗ not sig"
+                click.echo(
+                    f"      horizon={h['horizon_periods']}bars  "
+                    f"events={h['event_count']}  "
+                    f"win={h['win_rate']:.1%}  "
+                    f"p={h['p_value']:.4f}  {sig}"
+                )
+        else:
+            sig = click.style("✓ significant", fg="green") if output.get("statistically_significant") else "✗ not significant"
+            click.echo(f"    Events: {output.get('event_count')}  Win rate: {output.get('win_rate', 0):.1%}  p={output.get('p_value', 1):.4f}  {sig}")
+            click.echo(f"    Min sample met (n≥10): {output.get('minimum_events_met')}")
+
+    elif step_name == "detractor":
+        click.echo(f"    Primary challenge:  {output.primary_challenge}")
+        click.echo(f"    Methodological:     {output.methodological_concern}")
+        click.echo(f"    Alternative:        {output.alternative_explanation}")
+
+    elif step_name == "judge":
+        decision = output.decision.upper()
+        colour = {"ACCEPT": "green", "REJECT": "red"}.get(decision, "yellow")
+        click.echo(
+            f"    Decision: {click.style(decision, fg=colour, bold=True)}  "
+            f"(confidence: {output.confidence})"
+        )
+        click.echo(f"    Rationale: {output.rationale}")
+        if hasattr(output, "recommended_horizon"):
+            click.echo(f"    Best horizon: {output.recommended_horizon} bars")
+
+    elif step_name == "recommender":
+        action = output.action
+        colour = {
+            "archive_confirmed": "green", "accept_signal": "green",
+            "archive_rejected": "red",   "reject_signal":  "red",
+            "run_variant": "cyan",
+            "needs_more_data": "yellow",
+        }.get(action, "white")
+        click.echo(f"    Action: {click.style(action.upper().replace('_', ' '), fg=colour, bold=True)}")
+        click.echo(f"    {output.rationale}")
+
+    elif step_name == "summarizer":
+        click.echo(f"    {output.summary}")
+
+
+def _make_verbose_callback(labels: dict = _STEP_LABELS):
+    """Return a step callback that uses the given label set."""
+    def _cb(step_name: str, output) -> None:
+        _verbose_on_step(step_name, output, labels)
+    return _cb

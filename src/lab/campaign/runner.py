@@ -60,6 +60,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from typing import Any, Callable
+
 from lab.config import LabConfig
 from lab.data.loader import OHLCVCandle
 from lab.db.repository import (
@@ -141,10 +143,12 @@ class CampaignRunner:
         cfg: LabConfig,
         candles: list[OHLCVCandle],
         conn: sqlite3.Connection,
+        on_step: Callable[[str, Any], None] | None = None,
     ) -> None:
         self.cfg = cfg
         self.candles = candles
         self.conn = conn
+        self._on_step = on_step
 
         # Mutable campaign state — updated after every completed run.
         self._campaign_id: str = ""
@@ -296,7 +300,7 @@ class CampaignRunner:
                     status="partial",
                 ))
 
-            pipeline = PipelineRunner(run_cfg, self.candles)
+            pipeline = PipelineRunner(run_cfg, self.candles, on_step=self._on_step)
             try:
                 result = pipeline.run(run_id, prior_context=prior_context)
             except BudgetExceededError as exc:

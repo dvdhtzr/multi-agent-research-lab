@@ -45,7 +45,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 import instructor
 from openai import OpenAI
@@ -137,9 +137,15 @@ class PipelineRunner:
                  deterministic experiment — no network call needed.
     """
 
-    def __init__(self, cfg: LabConfig, candles: list[OHLCVCandle]) -> None:
+    def __init__(
+        self,
+        cfg: LabConfig,
+        candles: list[OHLCVCandle],
+        on_step: Callable[[str, Any], None] | None = None,
+    ) -> None:
         self.cfg = cfg
         self.candles = candles
+        self._on_step = on_step
         # instructor wraps the Ollama OpenAI-compatible client and handles
         # structured-output enforcement and retries.
         #
@@ -186,6 +192,8 @@ class PipelineRunner:
             researcher_prompt,
             ResearcherOutput,
         )
+        if self._on_step:
+            self._on_step("researcher", researcher_out)
 
         # ── Step 2: Devil's Advocate ──────────────────────────────────────────
         da_out: DevilsAdvocateOutput = self._call(
@@ -193,6 +201,8 @@ class PipelineRunner:
             _da_user(researcher_out),
             DevilsAdvocateOutput,
         )
+        if self._on_step:
+            self._on_step("devils_advocate", da_out)
 
         # ── Step 3: Researcher Rebuttal ───────────────────────────────────────
         rebuttal_out: ResearcherRebuttalOutput = self._call(
@@ -200,6 +210,8 @@ class PipelineRunner:
             _rebuttal_user(researcher_out, da_out),
             ResearcherRebuttalOutput,
         )
+        if self._on_step:
+            self._on_step("researcher_rebuttal", rebuttal_out)
 
         # ── Step 4: Deterministic experiment (no LLM) ────────────────────────
         params = researcher_out.experiment_params
@@ -222,6 +234,8 @@ class PipelineRunner:
             "method": exp_outcome["method"],
             "candles_used": exp_outcome["candles_used"],
         }
+        if self._on_step:
+            self._on_step("experiment", exp_result)
 
         # ── Step 5: Detractor ─────────────────────────────────────────────────
         detractor_out: DetractorOutput = self._call(
@@ -229,6 +243,8 @@ class PipelineRunner:
             _detractor_user(researcher_out, exp_result),
             DetractorOutput,
         )
+        if self._on_step:
+            self._on_step("detractor", detractor_out)
 
         # ── Step 6: Judge ─────────────────────────────────────────────────────
         judge_out: JudgeOutput = self._call(
@@ -236,6 +252,8 @@ class PipelineRunner:
             _judge_user(researcher_out, da_out, rebuttal_out, exp_result, detractor_out),
             JudgeOutput,
         )
+        if self._on_step:
+            self._on_step("judge", judge_out)
 
         # ── Step 7: Recommender ───────────────────────────────────────────────
         recommender_out: RecommenderOutput = self._call(
@@ -244,6 +262,8 @@ class PipelineRunner:
                               detractor_out, judge_out),
             RecommenderOutput,
         )
+        if self._on_step:
+            self._on_step("recommender", recommender_out)
 
         # ── Step 8: Summarizer ────────────────────────────────────────────────
         summarizer_out: SummarizerOutput = self._call(
@@ -251,6 +271,8 @@ class PipelineRunner:
             _summarizer_user(researcher_out, exp_result, judge_out, recommender_out),
             SummarizerOutput,
         )
+        if self._on_step:
+            self._on_step("summarizer", summarizer_out)
 
         elapsed = time.monotonic() - self._start_time
 
