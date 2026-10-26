@@ -30,6 +30,7 @@ from pathlib import Path
 
 import click
 
+from lab.campaign.runner import CampaignResult, CampaignRunner
 from lab.config import LabConfig, load_config
 from lab.data.loader import load_csv, validate_partition_size
 from lab.db.repository import (
@@ -51,6 +52,7 @@ from lab.db.repository import (
     save_research_run,
     update_run_status,
     get_recent_runs,
+    get_recent_campaigns,
     get_run_details,
 )
 from lab.db.schema import init_db
@@ -163,6 +165,187 @@ def research(env_file: str | None) -> None:
         f"({result.ollama_calls_used} Ollama calls, {result.wall_clock_seconds}s)\n"
     )
     _print_summary(result)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# campaign command
+# ─────────────────────────────────────────────────────────────────────────────
+
+@main.command()
+@click.option(
+    "--max-runs",
+    default=None,
+    type=int,
+    help=(
+        "Maximum pipeline runs in this campaign.  "
+        "Defaults to LAB_MAX_CAMPAIGN_RUNS (currently 5)."
+    ),
+)
+@click.option(
+    "--max-calls",
+    default=None,
+    type=int,
+    help=(
+        "Total LLM call budget across all runs (including retries).  "
+        "Defaults to LAB_MAX_CAMPAIGN_CALLS (currently 60)."
+    ),
+)
+@click.option(
+    "--resume",
+    default=None,
+    metavar="CAMPAIGN_ID",
+    help="Resume a previously interrupted campaign by its ID or 8-character prefix.",
+)
+@click.option(
+    "--env-file",
+    default=None,
+    help="Path to a .env configuration file.",
+)
+def campaign(
+    max_runs: int | None,
+    max_calls: int | None,
+    resume: str | None,
+    env_file: str | None,
+) -> None:
+    """
+    Run an autonomous multi-run research campaign.
+
+    The campaign loops the 8-agent pipeline, feeding each run's results back
+    as context for the next Researcher.  It stops when the Recommender decides
+    to archive a finding, when stagnation is detected, or when the budget runs
+    out.
+
+    Use --resume CAMPAIGN_ID to continue an interrupted campaign.
+    """
+    cfg = load_config(env_file)
+
+    # Apply CLI overrides on top of config defaults.
+    if max_runs is not None:
+        cfg = cfg.model_copy(update={"max_campaign_runs": max_runs})
+    if max_calls is not None:
+        cfg = cfg.model_copy(update={"max_campaign_calls": max_calls})
+
+    click.echo("═" * 60)
+    click.echo("  SPY Research Lab — Autonomous Campaign")
+    click.echo("═" * 60)
+
+    # ── Load data ─────────────────────────────────────────────────────────────
+    click.echo(f"\n[1/3] Loading data from {cfg.data_path} ...")
+    try:
+        load_result = load_csv(cfg.data_path)
+    except FileNotFoundError as exc:
+        _error(str(exc))
+        import sys; sys.exit(1)
+
+    if load_result.errors:
+        click.echo(f"  ⚠  Skipped {load_result.skipped_rows} rows: {load_result.errors[:3]}")
+
+    try:
+        validate_partition_size(load_result.candles)
+    except ValueError as exc:
+        _error(str(exc))
+        import sys; sys.exit(1)
+
+    click.echo(f"  ✓  {len(load_result.candles)} candles loaded.")
+
+    # ── Initialise DB ─────────────────────────────────────────────────────────
+    conn = init_db(cfg.db_path)
+
+    # ── Run or resume campaign ────────────────────────────────────────────────
+    click.echo(f"\n[2/3] Starting campaign ...")
+    click.echo(f"  Model:      {cfg.default_model}")
+    click.echo(f"  Budget:     {cfg.max_campaign_runs} runs | {cfg.max_campaign_calls} total calls")
+    click.echo(f"  Per-run:    up to {cfg.max_ollama_calls} calls, {cfg.max_wall_clock_seconds}s")
+    click.echo(f"  Ollama:     {cfg.ollama_base_url}")
+
+    runner = CampaignRunner(cfg, load_result.candles, conn)
+
+    try:
+        if resume:
+            # Allow short prefix (first 8 chars) as well as full UUID.
+            campaign_id = _resolve_campaign_id(conn, resume)
+            if campaign_id is None:
+                _error(f"No running campaign found matching '{resume}'.")
+                import sys; sys.exit(1)
+            click.echo(f"  Resuming:   {campaign_id[:8]}...\n")
+            result = CampaignRunner.resume(campaign_id, cfg, load_result.candles, conn)
+        else:
+            click.echo()
+            result = runner.run()
+    except ValueError as exc:
+        _error(str(exc))
+        import sys; sys.exit(1)
+    except Exception as exc:
+        _error(
+            f"Campaign failed unexpectedly: {exc}\n\n"
+            "  Is Ollama running?  Start it with: ollama serve\n"
+            f"  Is the model installed?  Run: ollama pull {cfg.default_model}"
+        )
+        import sys; sys.exit(1)
+
+    # ── Display results ───────────────────────────────────────────────────────
+    click.echo(f"\n[3/3] Campaign complete.\n")
+    _print_campaign_summary(result)
+
+
+def _resolve_campaign_id(conn, prefix: str) -> str | None:
+    """Find a 'running' campaign whose ID starts with prefix (or is the full ID)."""
+    from lab.db.repository import get_recent_campaigns
+    campaigns = get_recent_campaigns(conn, limit=20)
+    for c in campaigns:
+        if c["status"] == "running" and c["id"].startswith(prefix):
+            return c["id"]
+    return None
+
+
+def _print_campaign_summary(result: CampaignResult) -> None:
+    """Print a table-style summary of all runs in the campaign."""
+    status_colour = {
+        "completed": "green",
+        "stagnated": "yellow",
+        "budget_exhausted": "yellow",
+        "failed": "red",
+    }.get(result.status, "white")
+
+    click.echo("═" * 60)
+    click.echo("  CAMPAIGN SUMMARY")
+    click.echo("═" * 60)
+    click.echo(
+        f"  Campaign:    {result.campaign_id[:8]}..."
+    )
+    click.echo(
+        f"  Status:      "
+        + click.style(result.status.upper().replace("_", " "), fg=status_colour, bold=True)
+    )
+    click.echo(f"  Runs:        {result.runs_completed}")
+    click.echo(f"  Total calls: {result.total_calls_used}")
+    click.echo(f"  Stop reason: {result.stop_reason}")
+
+    if result.run_results:
+        click.echo("\n  Run-by-run decisions:")
+        click.echo(f"  {'#':3}  {'Decision':12}  {'p-value':8}  {'Events':7}  {'Params'}")
+        click.echo("  " + "─" * 54)
+        for i, run in enumerate(result.run_results, start=1):
+            hyp = run.hypothesis
+            exp = run.experiment_result
+            judge = run.judge_decision
+            params = hyp.get("experiment_params", {})
+            decision = judge.get("decision", "?").upper()
+            decision_colour = {"ACCEPT": "green", "REJECT": "red"}.get(decision, "yellow")
+            p_str = f"{exp.get('p_value', 0):.4f}"
+            n_str = str(exp.get("event_count", "?"))
+            param_str = (
+                f"short={params.get('short_window')}, "
+                f"long={params.get('long_window')}, "
+                f"horizon={params.get('horizon_periods')}"
+            )
+            click.echo(
+                f"  {i:3}  "
+                + click.style(f"{decision:12}", fg=decision_colour)
+                + f"  {p_str:8}  {n_str:7}  {param_str}"
+            )
+
+    click.echo("\n" + "═" * 60)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

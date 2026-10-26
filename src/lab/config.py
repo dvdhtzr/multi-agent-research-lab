@@ -56,20 +56,33 @@ class LabConfig(BaseSettings):
     data_path: Path = Field(default=Path("data/synthetic/spy_sample.csv"))
     db_path: Path = Field(default=Path("research.db"))
 
-    # --- Hard limits ---
+    # --- Hard limits (per single run) ---
     # WARNING: These limits are designed for locally-hosted, non-metered Ollama.
     # Never use progress-based budget extensions with paid API providers without
     # independently enforced spending ceilings that no agent decision can override.
     #
-    # Milestone 2 uses 8 Ollama calls per run.
+    # Milestone 2 uses 8 Ollama calls per run (7 agent calls + headroom for retries).
     # Default of 12 leaves headroom for slow models that may retry internally.
     max_ollama_calls: int = Field(
         default=12,
-        description="Maximum Ollama model invocations per research run",
+        description="Maximum Ollama model invocations per single research run (including retries)",
     )
     max_wall_clock_seconds: int = Field(
         default=300,
-        description="Maximum wall-clock seconds allowed for a research run",
+        description="Maximum wall-clock seconds allowed for a single research run",
+    )
+
+    # --- Campaign limits (Milestone 3) ---
+    # A campaign runs multiple pipeline iterations autonomously.
+    # max_campaign_runs caps how many runs the campaign may execute.
+    # max_campaign_calls caps total LLM calls across ALL runs, including retries.
+    max_campaign_runs: int = Field(
+        default=5,
+        description="Maximum pipeline runs in one autonomous campaign",
+    )
+    max_campaign_calls: int = Field(
+        default=60,
+        description="Maximum total LLM calls (including retries) across an entire campaign",
     )
 
 

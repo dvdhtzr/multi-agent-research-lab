@@ -49,6 +49,7 @@ from typing import Any
 
 import instructor
 from openai import OpenAI
+from tenacity import RetryCallState, Retrying, stop_after_attempt, wait_none
 
 from lab.agents.prompts import (
     RESEARCHER_SYSTEM, RESEARCHER_PROMPT,
@@ -156,9 +157,16 @@ class PipelineRunner:
 
     # ── Public entry point ────────────────────────────────────────────────────
 
-    def run(self, run_id: str) -> PipelineResult:
+    def run(self, run_id: str, prior_context: str | None = None) -> PipelineResult:
         """
         Execute the full 8-agent pipeline and return a PipelineResult.
+
+        Args:
+            run_id:        Unique identifier for this run (stored in DB).
+            prior_context: Optional text injected into the Researcher's user
+                           message, listing previously tested hypotheses so the
+                           model proposes something novel.  Provided by the
+                           CampaignRunner when running multiple iterations.
 
         Raises:
             BudgetExceededError: if the call count or wall-clock limit is hit.
@@ -168,10 +176,14 @@ class PipelineRunner:
         self._calls_used = 0
         self._start_time = time.monotonic()
 
+        researcher_prompt = RESEARCHER_PROMPT
+        if prior_context:
+            researcher_prompt = f"{RESEARCHER_PROMPT}\n\n{prior_context}"
+
         # ── Step 1: Researcher ────────────────────────────────────────────────
         researcher_out: ResearcherOutput = self._call(
             RESEARCHER_SYSTEM,
-            RESEARCHER_PROMPT,
+            researcher_prompt,
             ResearcherOutput,
         )
 
@@ -263,10 +275,23 @@ class PipelineRunner:
         """
         Make one LLM call and return the validated typed response.
 
-        Checks budget limits before each call.  instructor retries up to
-        max_retries times on Pydantic validation failures before raising.
+        Checks budget limits before the call and before each validation retry.
+        instructor retries on Pydantic validation failures; every such retry
+        is a real model invocation that counts against the budget.
+
+        Budget accounting: the `before` hook on the tenacity Retrying instance
+        is called before each attempt.  attempt_number == 1 is the original call
+        (counted after the call returns); attempt_number > 1 is a retry (counted
+        before that attempt fires, and the budget is re-checked).
         """
         self._check_budget()
+
+        def _before_retry(retry_state: RetryCallState) -> None:
+            if retry_state.attempt_number > 1:
+                # A validation retry — counts as an additional inference call.
+                self._calls_used += 1
+                self._check_budget()
+
         result = self._client.chat.completions.create(
             model=self.cfg.default_model,
             messages=[
@@ -274,9 +299,14 @@ class PipelineRunner:
                 {"role": "user", "content": user},
             ],
             response_model=response_model,
-            max_retries=2,
+            max_retries=Retrying(
+                stop=stop_after_attempt(3),   # original + up to 2 retries
+                wait=wait_none(),
+                before=_before_retry,
+                reraise=True,
+            ),
         )
-        self._calls_used += 1
+        self._calls_used += 1  # count the original successful (or last) attempt
         return result
 
     def _check_budget(self) -> None:

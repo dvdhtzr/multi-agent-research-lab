@@ -151,13 +151,30 @@ ollama pull gemma4
 Ollama must be running (`ollama serve` if it isn't already):
 
 ```bash
-python -m lab research
+python -m lab research          # one 8-agent pipeline run
+python -m lab campaign          # autonomous multi-run campaign
 ```
 
 ```bash
-python -m lab history           # list recent runs
+python -m lab history           # list recent single runs
 python -m lab history --run-id ecba8236   # full JSON detail for one run
 ```
+
+### Autonomous campaigns
+
+`python -m lab campaign` loops the full pipeline repeatedly. After each run it:
+
+1. Feeds the prior results back to the next Researcher ("don't repeat these")
+2. Routes on the Recommender's action (`run_variant` or `needs_more_data` → continue; `archive_*` → stop)
+3. Detects stagnation (3 consecutive runs with nearly identical SMA windows → stop)
+4. Enforces a total call budget across all runs, including validation retries
+
+```bash
+python -m lab campaign --max-runs 5 --max-calls 60
+python -m lab campaign --resume ecba8236   # resume an interrupted campaign
+```
+
+The campaign ID is printed at start. If interrupted, resume it by its 8-character prefix.
 
 ---
 
@@ -192,8 +209,10 @@ cp config.example.env .env
 | `LAB_OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama API base URL |
 | `LAB_DATA_PATH` | `data/synthetic/spy_sample.csv` | OHLCV CSV to analyse |
 | `LAB_DB_PATH` | `research.db` | SQLite database file |
-| `LAB_MAX_OLLAMA_CALLS` | `12` | Hard limit: Ollama calls per run |
-| `LAB_MAX_WALL_CLOCK_SECONDS` | `300` | Hard limit: seconds per run |
+| `LAB_MAX_OLLAMA_CALLS` | `12` | Hard limit: Ollama calls **per single run** (including retries) |
+| `LAB_MAX_WALL_CLOCK_SECONDS` | `300` | Hard limit: seconds per single run |
+| `LAB_MAX_CAMPAIGN_RUNS` | `5` | Maximum pipeline runs in one campaign |
+| `LAB_MAX_CAMPAIGN_CALLS` | `60` | Total LLM calls across an entire campaign (including retries) |
 
 > **Cost-safety note:** the budget limits exist for locally-hosted, non-metered Ollama. If you ever adapt this project for a paid API provider, implement independently-enforced spending ceilings that no agent decision can override. The budget variables alone are not sufficient.
 
@@ -220,10 +239,12 @@ LAB_DATA_PATH=data/private/spy_2018_2024.csv python -m lab research
 ```
 spy-research-lab/
 ├── src/lab/
-│   ├── cli.py                  # Entry point: research, history commands
+│   ├── cli.py                  # Entry point: research, campaign, history
 │   ├── config.py               # Pydantic BaseSettings — all configuration
 │   ├── pipeline/
 │   │   └── runner.py           # PipelineRunner — the 8-agent orchestration
+│   ├── campaign/
+│   │   └── runner.py           # CampaignRunner — multi-run autonomous loop
 │   ├── agents/
 │   │   ├── prompts.py          # System prompts for each agent role
 │   │   └── schemas.py          # Pydantic output schemas (the typed contracts)
@@ -240,13 +261,13 @@ spy-research-lab/
 │   └── spy_sample.csv          # 1,200 synthetic candles — safe for GitHub
 ├── tests/
 │   ├── unit/                   # Fast, no I/O, no Ollama
-│   ├── integration/            # Pipeline runner with mock instructor client
+│   ├── integration/            # Mocked pipeline/campaign runners
 │   └── smoke/                  # Live end-to-end — requires Ollama
 ├── config.example.env
 └── pyproject.toml
 ```
 
-The `pipeline/runner.py` file is the best place to start reading if you want to understand how the agents connect.
+Start with `pipeline/runner.py` to understand how the 8 agents connect, then `campaign/runner.py` to see how the multi-run loop works on top of it.
 
 ---
 
@@ -281,7 +302,7 @@ Increase `LAB_MAX_OLLAMA_CALLS` in `.env`. This usually means instructor is retr
 |---|---|---|
 | **1 — Minimal loop** | ✅ Complete | Researcher + Detractor + Judge, one experiment, full provenance |
 | **2 — Full deliberation** | ✅ Complete | Devil's Advocate, Rebuttal, Recommender, Summarizer; typed pipeline via instructor |
-| 3 — Autonomous campaigns | Planned | Multiple hypotheses, adaptive budgets, stagnation detection |
+| **3 — Autonomous campaigns** | ✅ Complete | Multi-run loop, adaptive budgets, stagnation detection, persistent memory, resumability |
 | 4 — Historical replay | Planned | 5-minute cadence, four prediction horizons |
 | 5 — Comparative evaluation | Planned | Baseline vs single-agent vs multi-agent |
 

@@ -281,6 +281,160 @@ def get_run_details(conn: sqlite3.Connection, run_id: str) -> dict | None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Milestone 3: Campaign domain types
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class Campaign:
+    """A named sequence of research runs sharing a budget and research memory.
+
+    status: 'running' | 'completed' | 'stagnated' | 'budget_exhausted' | 'failed'
+    """
+    id: str
+    created_at: str
+    status: str
+    max_runs: int
+    max_total_calls: int
+    runs_completed: int
+    total_calls_used: int
+    stop_reason: str | None
+    completed_at: str | None
+
+
+@dataclass
+class CampaignRun:
+    """Links a run to its parent campaign and records its sequence position."""
+    id: str
+    campaign_id: str
+    run_id: str
+    run_index: int      # 0-based
+    created_at: str
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Milestone 3: Campaign write operations
+# ─────────────────────────────────────────────────────────────────────────────
+
+def save_campaign(conn: sqlite3.Connection, campaign: Campaign) -> None:
+    """Insert a new campaign record."""
+    conn.execute(
+        "INSERT INTO campaigns "
+        "(id, created_at, status, max_runs, max_total_calls, "
+        " runs_completed, total_calls_used, stop_reason, completed_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (campaign.id, campaign.created_at, campaign.status,
+         campaign.max_runs, campaign.max_total_calls,
+         campaign.runs_completed, campaign.total_calls_used,
+         campaign.stop_reason, campaign.completed_at),
+    )
+
+
+def update_campaign(
+    conn: sqlite3.Connection,
+    campaign_id: str,
+    status: str,
+    runs_completed: int,
+    total_calls_used: int,
+    stop_reason: str | None = None,
+    completed_at: str | None = None,
+) -> None:
+    """Update mutable fields after each run or on campaign end."""
+    conn.execute(
+        "UPDATE campaigns "
+        "SET status=?, runs_completed=?, total_calls_used=?, "
+        "    stop_reason=?, completed_at=? "
+        "WHERE id=?",
+        (status, runs_completed, total_calls_used,
+         stop_reason, completed_at, campaign_id),
+    )
+
+
+def save_campaign_run(conn: sqlite3.Connection, cr: CampaignRun) -> None:
+    """Link a research run to its parent campaign."""
+    conn.execute(
+        "INSERT INTO campaign_runs (id, campaign_id, run_id, run_index, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (cr.id, cr.campaign_id, cr.run_id, cr.run_index, cr.created_at),
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Milestone 3: Campaign read operations
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_campaign(conn: sqlite3.Connection, campaign_id: str) -> Campaign | None:
+    """Return a Campaign record, or None if not found."""
+    row = conn.execute(
+        "SELECT * FROM campaigns WHERE id=?", (campaign_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    return Campaign(
+        id=row["id"],
+        created_at=row["created_at"],
+        status=row["status"],
+        max_runs=row["max_runs"],
+        max_total_calls=row["max_total_calls"],
+        runs_completed=row["runs_completed"],
+        total_calls_used=row["total_calls_used"],
+        stop_reason=row["stop_reason"],
+        completed_at=row["completed_at"],
+    )
+
+
+def get_campaign_hypotheses(conn: sqlite3.Connection, campaign_id: str) -> list[dict]:
+    """
+    Return the hypotheses tested in this campaign, ordered by test sequence.
+
+    Each dict contains: statement, experiment_type, parameters (dict),
+    judge_decision, p_value, event_count.
+    Used to build the prior-context prompt for the Researcher.
+    """
+    rows = conn.execute(
+        """
+        SELECT
+            h.statement,
+            h.experiment_type,
+            h.parameters,
+            jd.decision,
+            e.result
+        FROM campaign_runs cr
+        JOIN research_runs rr ON rr.id = cr.run_id
+        JOIN hypotheses h ON h.run_id = rr.id
+        LEFT JOIN experiments e ON e.hypothesis_id = h.id
+        LEFT JOIN judge_decisions jd ON jd.experiment_id = e.id
+        WHERE cr.campaign_id = ?
+        ORDER BY cr.run_index ASC
+        """,
+        (campaign_id,),
+    ).fetchall()
+
+    results = []
+    for row in rows:
+        result_blob = json.loads(row["result"]) if row["result"] else {}
+        results.append({
+            "statement": row["statement"],
+            "experiment_type": row["experiment_type"],
+            "parameters": json.loads(row["parameters"]),
+            "judge_decision": row["decision"],
+            "p_value": result_blob.get("p_value"),
+            "event_count": result_blob.get("event_count"),
+        })
+    return results
+
+
+def get_recent_campaigns(conn: sqlite3.Connection, limit: int = 5) -> list[dict]:
+    """Return the most recent campaigns, newest first."""
+    cursor = conn.execute(
+        "SELECT id, created_at, status, max_runs, runs_completed, "
+        "       total_calls_used, stop_reason "
+        "FROM campaigns ORDER BY created_at DESC LIMIT ?",
+        (limit,),
+    )
+    return [dict(row) for row in cursor.fetchall()]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Utility helpers
 # ─────────────────────────────────────────────────────────────────────────────
 

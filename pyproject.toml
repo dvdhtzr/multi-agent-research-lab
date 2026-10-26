@@ -34,6 +34,11 @@ dependencies = [
     # Statistical testing. Used only for scipy.stats.binomtest.
     # License: BSD-3-Clause (compatible with public repository distribution).
     "scipy>=1.13.0",
+
+    # Retry logic for instructor. instructor already depends on tenacity, but we
+    # import it directly in pipeline/runner.py to hook into retry callbacks for
+    # accurate LLM call budget accounting (including validation retries).
+    "tenacity>=8.2.0",
 ]
 
 [project.optional-dependencies]

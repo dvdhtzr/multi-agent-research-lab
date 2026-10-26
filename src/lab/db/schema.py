@@ -104,6 +104,42 @@ _CREATE_STATEMENTS = [
         created_at   TEXT NOT NULL
     )
     """,
+
+    # ── Milestone 3 additions ────────────────────────────────────────────────
+    #
+    # campaigns: a named sequence of research runs that share a budget and
+    # a persistent memory of previously tested hypotheses.
+    #
+    # status values:
+    #   'running'          — campaign is actively executing (or was interrupted)
+    #   'completed'        — all runs finished and Recommender said to stop
+    #   'stagnated'        — hypothesis diversity too low; campaign auto-stopped
+    #   'budget_exhausted' — hit max_runs or max_total_calls limit
+    #   'failed'           — unrecoverable error during a run
+    """
+    CREATE TABLE IF NOT EXISTS campaigns (
+        id               TEXT PRIMARY KEY,
+        created_at       TEXT NOT NULL,
+        status           TEXT NOT NULL,
+        max_runs         INTEGER NOT NULL,
+        max_total_calls  INTEGER NOT NULL,
+        runs_completed   INTEGER NOT NULL DEFAULT 0,
+        total_calls_used INTEGER NOT NULL DEFAULT 0,
+        stop_reason      TEXT,             -- human-readable reason campaign ended
+        completed_at     TEXT
+    )
+    """,
+
+    # campaign_runs: links each run to its parent campaign and records order.
+    """
+    CREATE TABLE IF NOT EXISTS campaign_runs (
+        id          TEXT PRIMARY KEY,
+        campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+        run_id      TEXT NOT NULL REFERENCES research_runs(id),
+        run_index   INTEGER NOT NULL,   -- 0-based position in this campaign
+        created_at  TEXT NOT NULL
+    )
+    """,
 ]
 
 
