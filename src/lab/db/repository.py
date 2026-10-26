@@ -435,6 +435,218 @@ def get_recent_campaigns(conn: sqlite3.Connection, limit: int = 5) -> list[dict]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Milestone 4: Replay domain types
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class ReplayRun:
+    """One walk-forward replay execution.
+
+    status: 'running' | 'completed' | 'budget_exhausted' | 'failed'
+    horizons: list of horizon integers, stored as JSON.
+    """
+    id: str
+    created_at: str
+    status: str
+    window_size: int
+    step_size: int
+    horizons: list[int]
+    steps_completed: int
+    total_calls_used: int
+    completed_at: str | None
+
+
+@dataclass
+class ReplayStep:
+    """One walk-forward window within a replay run."""
+    id: str
+    replay_id: str
+    step_index: int
+    window_start: int
+    window_end: int
+    timestamp_start: str
+    timestamp_end: str
+    parameters: dict        # {short_window, long_window}
+    result: dict            # MultiHorizonResult.to_dict()
+    judge_decision: dict    # ReplayJudgeOutput fields
+    recommendation: dict    # ReplayRecommenderOutput fields
+    summary: str
+    ollama_calls: int
+    created_at: str
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Milestone 4: Replay write operations
+# ─────────────────────────────────────────────────────────────────────────────
+
+def save_replay_run(conn: sqlite3.Connection, run: ReplayRun) -> None:
+    """Insert a new replay_runs record."""
+    conn.execute(
+        "INSERT INTO replay_runs "
+        "(id, created_at, status, window_size, step_size, horizons, "
+        " steps_completed, total_calls_used, completed_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (run.id, run.created_at, run.status,
+         run.window_size, run.step_size, json.dumps(run.horizons),
+         run.steps_completed, run.total_calls_used, run.completed_at),
+    )
+
+
+def update_replay_run(
+    conn: sqlite3.Connection,
+    replay_id: str,
+    status: str,
+    steps_completed: int,
+    total_calls_used: int,
+    completed_at: str | None = None,
+) -> None:
+    """Update mutable fields after each step or on replay end."""
+    conn.execute(
+        "UPDATE replay_runs "
+        "SET status=?, steps_completed=?, total_calls_used=?, completed_at=? "
+        "WHERE id=?",
+        (status, steps_completed, total_calls_used, completed_at, replay_id),
+    )
+
+
+def save_replay_step(conn: sqlite3.Connection, step: ReplayStep) -> None:
+    """Insert one replay window's full provenance."""
+    conn.execute(
+        "INSERT INTO replay_steps "
+        "(id, replay_id, step_index, window_start, window_end, "
+        " timestamp_start, timestamp_end, parameters, result, "
+        " judge_decision, recommendation, summary, ollama_calls, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (step.id, step.replay_id, step.step_index,
+         step.window_start, step.window_end,
+         step.timestamp_start, step.timestamp_end,
+         json.dumps(step.parameters), json.dumps(step.result),
+         json.dumps(step.judge_decision), json.dumps(step.recommendation),
+         step.summary, step.ollama_calls, step.created_at),
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Milestone 4: Replay read operations
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_replay_run(conn: sqlite3.Connection, replay_id: str) -> ReplayRun | None:
+    """Return a ReplayRun record, or None if not found."""
+    row = conn.execute(
+        "SELECT * FROM replay_runs WHERE id=?", (replay_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    return ReplayRun(
+        id=row["id"],
+        created_at=row["created_at"],
+        status=row["status"],
+        window_size=row["window_size"],
+        step_size=row["step_size"],
+        horizons=json.loads(row["horizons"]),
+        steps_completed=row["steps_completed"],
+        total_calls_used=row["total_calls_used"],
+        completed_at=row["completed_at"],
+    )
+
+
+def get_recent_replay_runs(conn: sqlite3.Connection, limit: int = 5) -> list[dict]:
+    """Return the most recent replay runs, newest first."""
+    cursor = conn.execute(
+        "SELECT id, created_at, status, window_size, step_size, "
+        "       horizons, steps_completed, total_calls_used "
+        "FROM replay_runs ORDER BY created_at DESC LIMIT ?",
+        (limit,),
+    )
+    rows = []
+    for row in cursor.fetchall():
+        d = dict(row)
+        d["horizons"] = json.loads(d["horizons"])
+        rows.append(d)
+    return rows
+
+
+def get_replay_steps(
+    conn: sqlite3.Connection,
+    replay_id: str,
+    limit: int = 100,
+) -> list[dict]:
+    """Return all steps for a replay run, ordered by step_index."""
+    cursor = conn.execute(
+        "SELECT * FROM replay_steps WHERE replay_id=? ORDER BY step_index LIMIT ?",
+        (replay_id, limit),
+    )
+    rows = []
+    for row in cursor.fetchall():
+        d = dict(row)
+        d["parameters"] = json.loads(d["parameters"])
+        d["result"] = json.loads(d["result"])
+        d["judge_decision"] = json.loads(d["judge_decision"])
+        d["recommendation"] = json.loads(d["recommendation"])
+        rows.append(d)
+    return rows
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Milestone 5: Comparison domain types and operations
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class Comparison:
+    """Side-by-side evaluation of baseline vs single-agent vs multi-agent."""
+    id: str
+    created_at: str
+    n_samples: int
+    llm_budget: int
+    baseline_json: dict
+    single_json: dict
+    multi_json: dict
+    completed_at: str | None
+
+
+def save_comparison(conn: sqlite3.Connection, cmp: Comparison) -> None:
+    """Insert a new comparison record."""
+    conn.execute(
+        "INSERT INTO comparisons "
+        "(id, created_at, n_samples, llm_budget, "
+        " baseline_json, single_json, multi_json, completed_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (cmp.id, cmp.created_at, cmp.n_samples, cmp.llm_budget,
+         json.dumps(cmp.baseline_json), json.dumps(cmp.single_json),
+         json.dumps(cmp.multi_json), cmp.completed_at),
+    )
+
+
+def get_comparison(conn: sqlite3.Connection, comparison_id: str) -> Comparison | None:
+    """Return a Comparison record, or None if not found."""
+    row = conn.execute(
+        "SELECT * FROM comparisons WHERE id=?", (comparison_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    return Comparison(
+        id=row["id"],
+        created_at=row["created_at"],
+        n_samples=row["n_samples"],
+        llm_budget=row["llm_budget"],
+        baseline_json=json.loads(row["baseline_json"]),
+        single_json=json.loads(row["single_json"]),
+        multi_json=json.loads(row["multi_json"]),
+        completed_at=row["completed_at"],
+    )
+
+
+def get_recent_comparisons(conn: sqlite3.Connection, limit: int = 5) -> list[dict]:
+    """Return the most recent comparisons, newest first."""
+    cursor = conn.execute(
+        "SELECT id, created_at, n_samples, llm_budget, completed_at "
+        "FROM comparisons ORDER BY created_at DESC LIMIT ?",
+        (limit,),
+    )
+    return [dict(row) for row in cursor.fetchall()]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Utility helpers
 # ─────────────────────────────────────────────────────────────────────────────
 

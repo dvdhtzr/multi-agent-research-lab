@@ -219,7 +219,189 @@ def run_sma_crossover_followthrough(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Dispatcher — called by the tool server
+# Multi-horizon result types (Milestone 4)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class HorizonResult:
+    """
+    Deterministic result for one prediction horizon of a multi-horizon experiment.
+
+    Agents receive these results but their output schemas have no field for
+    the numerical values — the trust boundary holds for multi-horizon results
+    the same way it holds for single-horizon results.
+    """
+    horizon_periods: int
+    event_count: int
+    positive_count: int
+    win_rate: float
+    p_value: float
+    statistically_significant: bool
+    minimum_events_met: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "horizon_periods": self.horizon_periods,
+            "event_count": self.event_count,
+            "positive_count": self.positive_count,
+            "win_rate": round(self.win_rate, 4),
+            "p_value": round(self.p_value, 6),
+            "statistically_significant": self.statistically_significant,
+            "minimum_events_met": self.minimum_events_met,
+        }
+
+
+@dataclass(frozen=True)
+class MultiHorizonResult:
+    """
+    Deterministic output of the sma_crossover_multihorizon experiment.
+
+    Tests the same crossover signal at multiple prediction horizons simultaneously,
+    giving a richer picture of how the pattern's predictive strength varies with
+    the look-ahead window.
+
+    All numeric fields are calculated by this module; no agent may change them.
+    """
+    experiment_type: str
+    short_window: int
+    long_window: int
+    horizons: tuple[HorizonResult, ...]   # one per requested horizon, ordered
+    candles_used: int
+    calculation_method: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "experiment_type": self.experiment_type,
+            "short_window": self.short_window,
+            "long_window": self.long_window,
+            "horizons": [h.to_dict() for h in self.horizons],
+            "candles_used": self.candles_used,
+            "calculation_method": self.calculation_method,
+        }
+
+    def best_horizon(self) -> HorizonResult | None:
+        """Return the horizon with the lowest p-value (strongest signal), or None."""
+        met = [h for h in self.horizons if h.minimum_events_met]
+        if not met:
+            return None
+        return min(met, key=lambda h: h.p_value)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SMA Crossover Multi-Horizon (Milestone 4)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def run_sma_crossover_multihorizon(
+    candles: list[OHLCVCandle],
+    short_window: int,
+    long_window: int,
+    horizon_list: list[int],
+) -> MultiHorizonResult:
+    """
+    Run the SMA golden-cross follow-through experiment at multiple horizons.
+
+    Detects crossover events once (shared across all horizons), then evaluates
+    the follow-through outcome at each horizon independently.  This is more
+    efficient than calling run_sma_crossover_followthrough() four times and
+    ensures the same event set is used for all horizons.
+
+    Args:
+        candles:      Chronologically ordered OHLCV candles.
+        short_window: Period for the fast SMA.
+        long_window:  Period for the slow SMA.
+        horizon_list: List of horizon lengths (bars) to test, e.g. [5, 15, 30, 60].
+
+    Returns:
+        MultiHorizonResult with one HorizonResult per entry in horizon_list.
+
+    Raises:
+        ValueError: if parameters are out of range or candles are insufficient
+                    for the largest horizon.
+    """
+    if not horizon_list:
+        raise ValueError("horizon_list must contain at least one horizon.")
+    max_horizon = max(horizon_list)
+    _validate_params(candles, short_window, long_window, max_horizon)
+
+    closes = [c.close for c in candles]
+    n = len(closes)
+
+    # --- Compute SMAs (shared for all horizons) ---
+    short_smas: list[float | None] = [None] * n
+    long_smas: list[float | None] = [None] * n
+    short_sum = 0.0
+    long_sum = 0.0
+    for i in range(n):
+        short_sum += closes[i]
+        long_sum += closes[i]
+        if i >= short_window:
+            short_sum -= closes[i - short_window]
+        if i >= long_window:
+            long_sum -= closes[i - long_window]
+        if i >= short_window - 1:
+            short_smas[i] = short_sum / short_window
+        if i >= long_window - 1:
+            long_smas[i] = long_sum / long_window
+
+    # --- Detect golden crosses (shared) ---
+    crossover_indices: list[int] = []
+    for i in range(1, n):
+        ps, pl = short_smas[i - 1], long_smas[i - 1]
+        cs, cl = short_smas[i], long_smas[i]
+        if None in (ps, pl, cs, cl):
+            continue
+        if ps <= pl and cs > cl:  # type: ignore[operator]
+            crossover_indices.append(i)
+
+    # --- Evaluate each horizon ---
+    horizon_results: list[HorizonResult] = []
+    for h in sorted(horizon_list):
+        positive_count = 0
+        valid_events = 0
+        for idx in crossover_indices:
+            future_idx = idx + h
+            if future_idx >= n:
+                continue
+            valid_events += 1
+            if closes[future_idx] > closes[idx]:
+                positive_count += 1
+
+        win_rate = positive_count / valid_events if valid_events > 0 else 0.0
+
+        if valid_events >= MIN_EVENTS_REQUIRED:
+            binom = binomtest(positive_count, n=valid_events, p=0.5, alternative="greater")
+            p_value = float(binom.pvalue)
+        else:
+            p_value = 1.0
+
+        horizon_results.append(HorizonResult(
+            horizon_periods=h,
+            event_count=valid_events,
+            positive_count=positive_count,
+            win_rate=win_rate,
+            p_value=p_value,
+            statistically_significant=p_value < SIGNIFICANCE_LEVEL,
+            minimum_events_met=valid_events >= MIN_EVENTS_REQUIRED,
+        ))
+
+    method_str = (
+        f"scipy.stats.binomtest(p=0.5, alternative='greater') | "
+        f"horizons={sorted(horizon_list)} | "
+        f"alpha={SIGNIFICANCE_LEVEL} | min_events={MIN_EVENTS_REQUIRED}"
+    )
+
+    return MultiHorizonResult(
+        experiment_type="sma_crossover_multihorizon",
+        short_window=short_window,
+        long_window=long_window,
+        horizons=tuple(horizon_results),
+        candles_used=n,
+        calculation_method=method_str,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Dispatcher — called by the pipeline
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_experiment(
@@ -230,20 +412,10 @@ def run_experiment(
     """
     Dispatch an experiment request to the correct deterministic function.
 
-    This is the single entry point called by the HTTP tool server.  It returns
-    the result as a plain dict for JSON serialisation.
-
-    Args:
-        candles:         The OHLCV candles available at research time.
-        experiment_type: Must match an entry in validator.ALLOWED_EXPERIMENTS.
-        parameters:      Experiment-specific parameters (already validated).
-
-    Returns:
-        A dict containing both the experiment result and metadata.
+    Returns a dict containing both the experiment result and metadata.
 
     Raises:
-        ValueError: if the experiment_type is not recognised.  The validator
-                    should prevent this, but we check defensively here too.
+        ValueError: if the experiment_type is not recognised.
     """
     if experiment_type == "sma_crossover_followthrough":
         result = run_sma_crossover_followthrough(
@@ -251,6 +423,20 @@ def run_experiment(
             short_window=int(parameters["short_window"]),
             long_window=int(parameters["long_window"]),
             horizon_periods=int(parameters["horizon_periods"]),
+        )
+        return {
+            "result": result.to_dict(),
+            "candles_used": result.candles_used,
+            "method": result.calculation_method,
+        }
+
+    if experiment_type == "sma_crossover_multihorizon":
+        horizon_list = [int(h) for h in parameters["horizon_list"]]
+        result = run_sma_crossover_multihorizon(
+            candles=candles,
+            short_window=int(parameters["short_window"]),
+            long_window=int(parameters["long_window"]),
+            horizon_list=horizon_list,
         )
         return {
             "result": result.to_dict(),

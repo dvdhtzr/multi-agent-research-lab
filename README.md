@@ -153,11 +153,44 @@ Ollama must be running (`ollama serve` if it isn't already):
 ```bash
 python -m lab research          # one 8-agent pipeline run
 python -m lab campaign          # autonomous multi-run campaign
+python -m lab replay            # walk-forward historical replay
+python -m lab compare           # baseline vs single-agent vs multi-agent
 ```
 
 ```bash
 python -m lab history           # list recent single runs
 python -m lab history --run-id ecba8236   # full JSON detail for one run
+```
+
+### Walk-forward replay
+
+`python -m lab replay` slides a fixed-size window of candles through the full dataset, running a compact 4-agent pipeline (Researcher → multi-horizon experiment → Judge → Recommender → Summarizer) at each position:
+
+```bash
+python -m lab replay                               # default settings
+python -m lab replay --window-size 300 --step-size 60 --horizons "5,15,30,60"
+python -m lab replay --max-calls 200
+```
+
+Each window tests the SMA crossover signal at four prediction horizons simultaneously (5, 15, 30, and 60 bars by default), giving a picture of how the pattern's predictive strength varies with the look-ahead window.
+
+### Comparative evaluation
+
+`python -m lab compare` answers: **does multi-agent deliberation improve hypothesis quality, relative to its 7× LLM call cost?**
+
+Three arms run on the same dataset with the same LLM budget:
+
+| Arm | LLM calls per run | Strategy |
+|---|---|---|
+| **Baseline** | 0 | Random parameter-space grid search |
+| **Single-agent** | 1 | Researcher only, no deliberation |
+| **Multi-agent** | ~7 | Full 8-agent CampaignRunner |
+
+The comparison metric is **calls per significant finding** — a cheaper approach that finds the same patterns is strictly better.
+
+```bash
+python -m lab compare                              # default settings
+python -m lab compare --n-samples 50 --llm-budget 60
 ```
 
 ### Autonomous campaigns
@@ -184,7 +217,7 @@ The campaign ID is printed at start. If interrupted, resume it by its 8-characte
 pytest tests/unit/ tests/integration/ -v
 ```
 
-**74 tests, ~3 seconds, no Ollama required.**
+**156 tests, ~3 seconds, no Ollama required.**
 
 The integration tests replace the instructor client with a mock that returns canned typed responses, so the full 8-agent orchestration is exercised — including budget enforcement and experiment dispatch — without calling Ollama.
 
@@ -213,6 +246,12 @@ cp config.example.env .env
 | `LAB_MAX_WALL_CLOCK_SECONDS` | `300` | Hard limit: seconds per single run |
 | `LAB_MAX_CAMPAIGN_RUNS` | `5` | Maximum pipeline runs in one campaign |
 | `LAB_MAX_CAMPAIGN_CALLS` | `60` | Total LLM calls across an entire campaign (including retries) |
+| `LAB_REPLAY_WINDOW_SIZE` | `300` | Candles per walk-forward replay window |
+| `LAB_REPLAY_STEP_SIZE` | `60` | Candles to advance between windows |
+| `LAB_REPLAY_HORIZONS` | `[5,15,30,60]` | Prediction horizons tested simultaneously per window |
+| `LAB_MAX_REPLAY_CALLS` | `200` | Total LLM calls across an entire replay run (including retries) |
+| `LAB_COMPARE_N_SAMPLES` | `50` | Parameter samples for baseline and single-agent comparison arms |
+| `LAB_COMPARE_LLM_BUDGET` | `60` | Total LLM call budget for single-agent and multi-agent arms |
 
 > **Cost-safety note:** the budget limits exist for locally-hosted, non-metered Ollama. If you ever adapt this project for a paid API provider, implement independently-enforced spending ceilings that no agent decision can override. The budget variables alone are not sufficient.
 
@@ -239,17 +278,23 @@ LAB_DATA_PATH=data/private/spy_2018_2024.csv python -m lab research
 ```
 spy-research-lab/
 ├── src/lab/
-│   ├── cli.py                  # Entry point: research, campaign, history
+│   ├── cli.py                  # Entry point: research, campaign, replay, compare, history
 │   ├── config.py               # Pydantic BaseSettings — all configuration
 │   ├── pipeline/
-│   │   └── runner.py           # PipelineRunner — the 8-agent orchestration
+│   │   ├── runner.py           # PipelineRunner — the 8-agent orchestration
+│   │   └── replay_runner.py    # ReplayPipelineRunner — 4-agent replay pipeline
 │   ├── campaign/
 │   │   └── runner.py           # CampaignRunner — multi-run autonomous loop
 │   ├── agents/
 │   │   ├── prompts.py          # System prompts for each agent role
 │   │   └── schemas.py          # Pydantic output schemas (the typed contracts)
+│   ├── evaluation/
+│   │   ├── baseline.py         # BaselineEvaluator — random parameter grid search
+│   │   ├── single_agent.py     # SingleAgentRunner — Researcher only, no deliberation
+│   │   └── runner.py           # ComparisonRunner — orchestrates all three arms
 │   ├── research/
 │   │   ├── experiments.py      # Deterministic SMA crossover calculation
+│   │   ├── replay.py           # ReplayEngine — walk-forward window generator
 │   │   └── validator.py        # Experiment spec validation
 │   ├── data/
 │   │   ├── loader.py           # CSV parsing, OHLCV validation
@@ -303,8 +348,8 @@ Increase `LAB_MAX_OLLAMA_CALLS` in `.env`. This usually means instructor is retr
 | **1 — Minimal loop** | ✅ Complete | Researcher + Detractor + Judge, one experiment, full provenance |
 | **2 — Full deliberation** | ✅ Complete | Devil's Advocate, Rebuttal, Recommender, Summarizer; typed pipeline via instructor |
 | **3 — Autonomous campaigns** | ✅ Complete | Multi-run loop, adaptive budgets, stagnation detection, persistent memory, resumability |
-| 4 — Historical replay | Planned | 5-minute cadence, four prediction horizons |
-| 5 — Comparative evaluation | Planned | Baseline vs single-agent vs multi-agent |
+| **4 — Historical replay** | ✅ Complete | Walk-forward engine, sma_crossover_multihorizon (4 horizons), 4-agent replay pipeline |
+| **5 — Comparative evaluation** | ✅ Complete | Baseline vs single-agent vs multi-agent; calls-per-significant-finding metric |
 
 ---
 

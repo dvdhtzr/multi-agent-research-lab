@@ -140,6 +140,62 @@ _CREATE_STATEMENTS = [
         created_at  TEXT NOT NULL
     )
     """,
+
+    # ── Milestone 4 additions ────────────────────────────────────────────────
+    #
+    # replay_runs: one row per walk-forward replay execution.
+    # Each replay tests a fixed multi-horizon experiment across many time windows.
+    """
+    CREATE TABLE IF NOT EXISTS replay_runs (
+        id               TEXT PRIMARY KEY,
+        created_at       TEXT NOT NULL,
+        status           TEXT NOT NULL,   -- 'running' | 'completed' | 'budget_exhausted' | 'failed'
+        window_size      INTEGER NOT NULL,
+        step_size        INTEGER NOT NULL,
+        horizons         TEXT NOT NULL,   -- JSON array, e.g. [5, 15, 30, 60]
+        steps_completed  INTEGER NOT NULL DEFAULT 0,
+        total_calls_used INTEGER NOT NULL DEFAULT 0,
+        completed_at     TEXT
+    )
+    """,
+
+    # replay_steps: one row per walk-forward window within a replay run.
+    # Stores full provenance: parameters, multi-horizon result, judge, recommender, summary.
+    """
+    CREATE TABLE IF NOT EXISTS replay_steps (
+        id              TEXT PRIMARY KEY,
+        replay_id       TEXT NOT NULL REFERENCES replay_runs(id),
+        step_index      INTEGER NOT NULL,
+        window_start    INTEGER NOT NULL,   -- 0-based candle index (inclusive)
+        window_end      INTEGER NOT NULL,   -- exclusive
+        timestamp_start TEXT NOT NULL,
+        timestamp_end   TEXT NOT NULL,
+        parameters      TEXT NOT NULL,      -- JSON: {short_window, long_window}
+        result          TEXT NOT NULL,      -- JSON: MultiHorizonResult.to_dict()
+        judge_decision  TEXT NOT NULL,      -- JSON: ReplayJudgeOutput
+        recommendation  TEXT NOT NULL,      -- JSON: ReplayRecommenderOutput
+        summary         TEXT NOT NULL,
+        ollama_calls    INTEGER NOT NULL,
+        created_at      TEXT NOT NULL
+    )
+    """,
+
+    # ── Milestone 5 additions ────────────────────────────────────────────────
+    #
+    # comparisons: stores the side-by-side evaluation of baseline vs
+    # single-agent vs multi-agent approaches on the same dataset and budget.
+    """
+    CREATE TABLE IF NOT EXISTS comparisons (
+        id               TEXT PRIMARY KEY,
+        created_at       TEXT NOT NULL,
+        n_samples        INTEGER NOT NULL,
+        llm_budget       INTEGER NOT NULL,
+        baseline_json    TEXT NOT NULL,     -- JSON: BaselineResult.summary_dict()
+        single_json      TEXT NOT NULL,     -- JSON: SingleAgentResult.summary_dict()
+        multi_json       TEXT NOT NULL,     -- JSON: campaign summary dict
+        completed_at     TEXT
+    )
+    """,
 ]
 
 

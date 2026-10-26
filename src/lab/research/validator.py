@@ -60,6 +60,20 @@ ALLOWED_EXPERIMENTS: dict[str, ExperimentSpec] = {
             ParameterSpec("horizon_periods",min_value=1,  max_value=120, description="Bars to look forward for outcome"),
         ],
     ),
+    "sma_crossover_multihorizon": ExperimentSpec(
+        name="sma_crossover_multihorizon",
+        description=(
+            "Tests the SMA golden-cross follow-through pattern at multiple "
+            "prediction horizons simultaneously.  The set of horizons is fixed "
+            "by configuration — agents propose only short_window and long_window.  "
+            "Returns one statistical result per horizon, allowing comparison of "
+            "how the signal's predictive strength varies with the look-ahead window."
+        ),
+        parameters=[
+            ParameterSpec("short_window", min_value=2,  max_value=30,  description="Period of the fast SMA"),
+            ParameterSpec("long_window",  min_value=5,  max_value=100, description="Period of the slow SMA"),
+        ],
+    ),
 }
 
 

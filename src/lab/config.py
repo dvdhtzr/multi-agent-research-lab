@@ -85,6 +85,39 @@ class LabConfig(BaseSettings):
         description="Maximum total LLM calls (including retries) across an entire campaign",
     )
 
+    # --- Replay settings (Milestone 4) ---
+    # Walk-forward replay slides a window of REPLAY_WINDOW_SIZE candles through
+    # the full dataset, stepping forward REPLAY_STEP_SIZE candles each time.
+    # At each step a compact 4-agent pipeline tests REPLAY_HORIZONS simultaneously.
+    replay_window_size: int = Field(
+        default=300,
+        description="Number of candles per walk-forward replay window",
+    )
+    replay_step_size: int = Field(
+        default=60,
+        description="Candles to advance between consecutive replay windows",
+    )
+    replay_horizons: list[int] = Field(
+        default=[5, 15, 30, 60],
+        description="Prediction horizons (bars) tested simultaneously in each replay window",
+    )
+    max_replay_calls: int = Field(
+        default=200,
+        description="Maximum total LLM calls (including retries) across an entire replay run",
+    )
+
+    # --- Comparison settings (Milestone 5) ---
+    # compare_n_samples: number of parameter draws for baseline + single-agent.
+    # compare_llm_budget: total LLM calls for the single-agent and multi-agent arms.
+    compare_n_samples: int = Field(
+        default=50,
+        description="Parameter samples for baseline and single-agent comparison arms",
+    )
+    compare_llm_budget: int = Field(
+        default=60,
+        description="Total LLM call budget for single-agent and multi-agent comparison arms",
+    )
+
 
 def load_config(env_file: Optional[str] = None) -> LabConfig:
     """

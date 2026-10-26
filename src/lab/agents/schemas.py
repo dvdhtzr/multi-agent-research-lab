@@ -132,3 +132,64 @@ class SummarizerOutput(BaseModel):
         min_length=20,
         description="3-5 sentences suitable for a non-technical reader.",
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Milestone 4 — Replay pipeline schemas
+# ─────────────────────────────────────────────────────────────────────────────
+
+class SMAParamsNoHorizon(BaseModel):
+    """SMA window parameters without a horizon (replay — horizons are fixed by config)."""
+    short_window: int = Field(ge=2, le=30)
+    long_window: int = Field(ge=5, le=100)
+
+    @model_validator(mode="after")
+    def long_must_exceed_short(self) -> "SMAParamsNoHorizon":
+        if self.long_window <= self.short_window:
+            raise ValueError(
+                f"long_window ({self.long_window}) must be > short_window ({self.short_window})"
+            )
+        return self
+
+
+class ReplayResearcherOutput(BaseModel):
+    """Researcher output for the replay pipeline.
+
+    Uses sma_crossover_multihorizon — horizons are supplied by the engine,
+    not proposed by the agent.
+    """
+    hypothesis_statement: str = Field(min_length=10)
+    experiment_type: Literal["sma_crossover_multihorizon"]
+    experiment_params: SMAParamsNoHorizon
+
+
+class ReplayJudgeOutput(BaseModel):
+    """Judge output for a multi-horizon replay step.
+
+    The schema has no numerical fields — the Judge interprets the evidence
+    but cannot alter the deterministic p-values or event counts.
+    """
+    decision: Literal["accept", "reject", "inconclusive"]
+    rationale: str = Field(min_length=20)
+    confidence: Literal["high", "medium", "low"]
+    # Interpretive choice among the config-defined horizons; not a
+    # free-form number — the Judge must pick from the horizons shown.
+    recommended_horizon: int = Field(
+        description="Which horizon (bars) the Judge considers most promising, "
+                    "chosen from the horizons listed in the evidence.",
+        ge=1,
+    )
+
+
+class ReplayRecommenderOutput(BaseModel):
+    """Recommender output for a replay step."""
+    action: Literal["accept_signal", "reject_signal", "needs_more_data"]
+    rationale: str = Field(min_length=10)
+
+
+class ReplaySummarizerOutput(BaseModel):
+    """Plain-English summary of a single replay step."""
+    summary: str = Field(
+        min_length=20,
+        description="2-3 sentences describing this window's findings.",
+    )

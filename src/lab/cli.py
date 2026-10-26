@@ -41,6 +41,8 @@ from lab.db.repository import (
     Recommendation,
     Summary,
     ResearchRun,
+    ReplayRun as ReplayRunRecord,
+    ReplayStep as ReplayStepRecord,
     new_id,
     now_iso,
     save_agent_argument,
@@ -53,10 +55,23 @@ from lab.db.repository import (
     update_run_status,
     get_recent_runs,
     get_recent_campaigns,
+    get_recent_replay_runs,
+    get_replay_steps,
     get_run_details,
+    save_replay_run,
+    save_replay_step,
+    update_replay_run,
 )
 from lab.db.schema import init_db
 from lab.pipeline.runner import PipelineResult, PipelineRunner, BudgetExceededError
+from lab.pipeline.replay_runner import ReplayPipelineRunner, ReplayResult, ReplayStepResult
+from lab.research.replay import ReplayEngine
+from lab.evaluation.runner import ComparisonResult, ComparisonRunner
+from lab.db.repository import (
+    Comparison,
+    save_comparison,
+    get_recent_comparisons,
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -346,6 +361,443 @@ def _print_campaign_summary(result: CampaignResult) -> None:
             )
 
     click.echo("\n" + "═" * 60)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# replay command (Milestone 4)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@main.command()
+@click.option(
+    "--window-size",
+    default=None,
+    type=int,
+    help="Number of candles per walk-forward window.  Defaults to LAB_REPLAY_WINDOW_SIZE (300).",
+)
+@click.option(
+    "--step-size",
+    default=None,
+    type=int,
+    help="Candles to advance between windows.  Defaults to LAB_REPLAY_STEP_SIZE (60).",
+)
+@click.option(
+    "--horizons",
+    default=None,
+    type=str,
+    metavar="LIST",
+    help="Comma-separated prediction horizons, e.g. '5,15,30,60'.  Defaults to LAB_REPLAY_HORIZONS.",
+)
+@click.option(
+    "--max-calls",
+    default=None,
+    type=int,
+    help="Total LLM call budget across all windows.  Defaults to LAB_MAX_REPLAY_CALLS (200).",
+)
+@click.option("--env-file", default=None, help="Path to a .env configuration file.")
+def replay(
+    window_size: int | None,
+    step_size: int | None,
+    horizons: str | None,
+    max_calls: int | None,
+    env_file: str | None,
+) -> None:
+    """
+    Walk-forward historical replay with multi-horizon experiment.
+
+    Slides a candle window through the full dataset.  At each step a 4-agent
+    pipeline (Researcher → Experiment → Judge → Recommender → Summarizer)
+    tests the sma_crossover_multihorizon experiment on that window.
+
+    Results are persisted to SQLite.  Use 'python -m lab replay --list' to
+    see past replay runs.
+    """
+    cfg = load_config(env_file)
+
+    if window_size is not None:
+        cfg = cfg.model_copy(update={"replay_window_size": window_size})
+    if step_size is not None:
+        cfg = cfg.model_copy(update={"replay_step_size": step_size})
+    if horizons is not None:
+        parsed = [int(h.strip()) for h in horizons.split(",") if h.strip()]
+        cfg = cfg.model_copy(update={"replay_horizons": parsed})
+    if max_calls is not None:
+        cfg = cfg.model_copy(update={"max_replay_calls": max_calls})
+
+    click.echo("═" * 60)
+    click.echo("  SPY Research Lab — Walk-Forward Replay")
+    click.echo("═" * 60)
+
+    # ── Load data ─────────────────────────────────────────────────────────────
+    click.echo(f"\n[1/4] Loading data from {cfg.data_path} ...")
+    try:
+        load_result = load_csv(cfg.data_path)
+    except FileNotFoundError as exc:
+        _error(str(exc))
+        sys.exit(1)
+
+    if load_result.errors:
+        click.echo(f"  ⚠  Skipped {load_result.skipped_rows} rows: {load_result.errors[:3]}")
+
+    try:
+        validate_partition_size(load_result.candles)
+    except ValueError as exc:
+        _error(str(exc))
+        sys.exit(1)
+
+    click.echo(f"  ✓  {len(load_result.candles)} candles loaded.")
+
+    # ── Build engine and compute step count ───────────────────────────────────
+    try:
+        engine = ReplayEngine(
+            load_result.candles,
+            window_size=cfg.replay_window_size,
+            step_size=cfg.replay_step_size,
+        )
+    except ValueError as exc:
+        _error(str(exc))
+        sys.exit(1)
+
+    total_steps = engine.total_steps()
+    horizons_str = ", ".join(str(h) for h in cfg.replay_horizons)
+
+    click.echo(f"\n[2/4] Replay plan:")
+    click.echo(f"  Windows:    {total_steps} × {cfg.replay_window_size} candles")
+    click.echo(f"  Step size:  {cfg.replay_step_size} candles")
+    click.echo(f"  Horizons:   {horizons_str} bars")
+    click.echo(f"  Budget:     {cfg.max_replay_calls} total LLM calls")
+    click.echo(f"  Per-window: up to {cfg.max_ollama_calls} calls")
+    click.echo(f"  Model:      {cfg.default_model}")
+    click.echo(f"  Ollama:     {cfg.ollama_base_url}")
+
+    # ── Initialise DB and replay run ──────────────────────────────────────────
+    conn = init_db(cfg.db_path)
+    replay_id = str(uuid.uuid4())
+    ts = now_iso()
+
+    with conn:
+        save_replay_run(conn, ReplayRunRecord(
+            id=replay_id,
+            created_at=ts,
+            status="running",
+            window_size=cfg.replay_window_size,
+            step_size=cfg.replay_step_size,
+            horizons=cfg.replay_horizons,
+            steps_completed=0,
+            total_calls_used=0,
+            completed_at=None,
+        ))
+
+    click.echo(f"\n  Replay ID: {replay_id[:8]}...\n")
+
+    # ── Run each window ───────────────────────────────────────────────────────
+    click.echo(f"[3/4] Running {total_steps} windows ...")
+    step_results: list[ReplayStepResult] = []
+    total_calls_used = 0
+    final_status = "completed"
+
+    for step in engine.steps():
+        remaining_calls = cfg.max_replay_calls - total_calls_used
+        per_step_budget = min(remaining_calls, cfg.max_ollama_calls)
+
+        if per_step_budget < 5:
+            click.echo(
+                f"\n  Budget exhausted after {step.step_index} windows "
+                f"({total_calls_used} calls used)."
+            )
+            final_status = "budget_exhausted"
+            break
+
+        runner = ReplayPipelineRunner(cfg, step, budget=per_step_budget)
+        try:
+            result = runner.run()
+        except BudgetExceededError as exc:
+            click.echo(f"\n  ⚠  Window {step.step_index} hit budget: {exc}")
+            final_status = "budget_exhausted"
+            break
+        except Exception as exc:
+            _error(
+                f"Window {step.step_index} failed: {exc}\n"
+                "  Is Ollama running?  Start it with: ollama serve"
+            )
+            final_status = "failed"
+            with conn:
+                update_replay_run(conn, replay_id, "failed",
+                                  len(step_results), total_calls_used, now_iso())
+            sys.exit(1)
+
+        step_results.append(result)
+        total_calls_used += result.ollama_calls_used
+
+        decision = result.judge_decision.get("decision", "?").upper()
+        decision_colour = {"ACCEPT": "green", "REJECT": "red"}.get(decision, "yellow")
+        click.echo(
+            f"  [{step.step_index + 1:3}/{total_steps}] "
+            + click.style(f"{decision:12}", fg=decision_colour)
+            + f"  calls={result.ollama_calls_used:3}  "
+            f"short={result.hypothesis['experiment_params']['short_window']}, "
+            f"long={result.hypothesis['experiment_params']['long_window']}"
+        )
+
+        # Persist this step
+        with conn:
+            save_replay_step(conn, ReplayStepRecord(
+                id=new_id(),
+                replay_id=replay_id,
+                step_index=result.step_index,
+                window_start=result.window_start,
+                window_end=result.window_end,
+                timestamp_start=result.timestamp_start,
+                timestamp_end=result.timestamp_end,
+                parameters=result.hypothesis["experiment_params"],
+                result=result.experiment_result,
+                judge_decision=result.judge_decision,
+                recommendation=result.recommendation,
+                summary=result.summarizer_output.get("summary", ""),
+                ollama_calls=result.ollama_calls_used,
+                created_at=now_iso(),
+            ))
+            update_replay_run(conn, replay_id, "running",
+                              len(step_results), total_calls_used)
+
+    # ── Finalise ──────────────────────────────────────────────────────────────
+    with conn:
+        update_replay_run(conn, replay_id, final_status,
+                          len(step_results), total_calls_used, now_iso())
+
+    click.echo(f"\n[4/4] Replay complete.")
+    _print_replay_summary(replay_id, final_status, step_results, total_calls_used)
+
+
+def _print_comparison_summary(result: ComparisonResult) -> None:
+    """Print a formatted side-by-side comparison table."""
+    click.echo("\n" + "═" * 72)
+    click.echo("  COMPARISON SUMMARY")
+    click.echo("═" * 72)
+    click.echo(f"  ID:        {result.comparison_id[:8]}...")
+    click.echo(f"  Samples:   {result.n_samples}  |  LLM budget: {result.llm_budget} calls")
+    click.echo()
+
+    header = f"  {'Approach':18}  {'Runs':>6}  {'Sig.':>5}  {'Rate':>7}  {'Best p':>8}  {'Calls':>6}  {'Calls/Sig':>9}"
+    click.echo(header)
+    click.echo("  " + "─" * 68)
+
+    for s in result.summaries:
+        approach_label = s.approach.replace("_", " ").title()
+        sig_colour = "green" if s.significant_count > 0 else "red"
+        cps = f"{s.calls_per_significant:.1f}" if s.calls_per_significant != float("inf") else "∞"
+        click.echo(
+            f"  {approach_label:18}  {s.runs:6}  "
+            + click.style(f"{s.significant_count:5}", fg=sig_colour)
+            + f"  {s.significant_rate:6.1%}  {s.best_p_value:8.4f}  {s.calls_used:6}  {cps:>9}"
+        )
+
+    click.echo()
+    click.echo("  Columns: Runs=experiments executed, Sig=significant findings (p<0.05 ∧ n≥10),")
+    click.echo("           Rate=sig/runs, Best p=lowest p-value found, Calls/Sig=LLM efficiency")
+    click.echo("\n" + "═" * 72)
+
+
+def _print_replay_summary(
+    replay_id: str,
+    status: str,
+    step_results: list[ReplayStepResult],
+    total_calls: int,
+) -> None:
+    """Print a concise replay summary."""
+    status_colour = {
+        "completed": "green",
+        "budget_exhausted": "yellow",
+        "failed": "red",
+    }.get(status, "white")
+
+    click.echo("\n" + "═" * 60)
+    click.echo("  REPLAY SUMMARY")
+    click.echo("═" * 60)
+    click.echo(f"  Replay ID:   {replay_id[:8]}...")
+    click.echo(
+        f"  Status:      "
+        + click.style(status.upper().replace("_", " "), fg=status_colour, bold=True)
+    )
+    click.echo(f"  Windows run: {len(step_results)}")
+    click.echo(f"  Total calls: {total_calls}")
+
+    if step_results:
+        accepts = sum(
+            1 for r in step_results
+            if r.judge_decision.get("decision") == "accept"
+        )
+        click.echo(f"  Accept rate: {accepts}/{len(step_results)} windows")
+
+        click.echo("\n  Sample decisions (first 10 windows):")
+        click.echo(f"  {'#':>4}  {'Decision':12}  {'Action':18}  {'SMA params'}")
+        click.echo("  " + "─" * 54)
+        for r in step_results[:10]:
+            decision = r.judge_decision.get("decision", "?").upper()
+            action = r.recommendation.get("action", "?")
+            decision_colour = {"ACCEPT": "green", "REJECT": "red"}.get(decision, "yellow")
+            params = r.hypothesis["experiment_params"]
+            click.echo(
+                f"  {r.step_index + 1:4}  "
+                + click.style(f"{decision:12}", fg=decision_colour)
+                + f"  {action:18}  "
+                f"short={params['short_window']}, long={params['long_window']}"
+            )
+        if len(step_results) > 10:
+            click.echo(f"  ... and {len(step_results) - 10} more windows")
+
+    click.echo("\n" + "═" * 60)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# compare command (Milestone 5)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@main.command()
+@click.option(
+    "--n-samples",
+    default=None,
+    type=int,
+    help="Parameter draws for baseline + single-agent arms.  Defaults to LAB_COMPARE_N_SAMPLES (50).",
+)
+@click.option(
+    "--llm-budget",
+    default=None,
+    type=int,
+    help="Total LLM call budget for single-agent and multi-agent arms.  Defaults to LAB_COMPARE_LLM_BUDGET (60).",
+)
+@click.option("--env-file", default=None, help="Path to a .env configuration file.")
+def compare(
+    n_samples: int | None,
+    llm_budget: int | None,
+    env_file: str | None,
+) -> None:
+    """
+    Compare baseline vs single-agent vs multi-agent research approaches.
+
+    Runs three evaluations on the same dataset with the same LLM budget:
+
+    \b
+      1. Baseline     — random parameter grid search, 0 LLM calls
+      2. Single-agent — Researcher only (no deliberation), 1 call/run
+      3. Multi-agent  — full 8-agent CampaignRunner
+
+    Prints a side-by-side table of significant findings, best p-value,
+    and LLM efficiency (calls per significant finding).
+    """
+    cfg = load_config(env_file)
+
+    if n_samples is not None:
+        cfg = cfg.model_copy(update={"compare_n_samples": n_samples})
+    if llm_budget is not None:
+        cfg = cfg.model_copy(update={"compare_llm_budget": llm_budget})
+
+    click.echo("═" * 60)
+    click.echo("  SPY Research Lab — Comparative Evaluation")
+    click.echo("═" * 60)
+
+    # ── Load data ─────────────────────────────────────────────────────────────
+    click.echo(f"\n[1/5] Loading data from {cfg.data_path} ...")
+    try:
+        load_result = load_csv(cfg.data_path)
+    except FileNotFoundError as exc:
+        _error(str(exc))
+        sys.exit(1)
+
+    if load_result.errors:
+        click.echo(f"  ⚠  Skipped {load_result.skipped_rows} rows: {load_result.errors[:3]}")
+
+    try:
+        validate_partition_size(load_result.candles)
+    except ValueError as exc:
+        _error(str(exc))
+        sys.exit(1)
+
+    click.echo(f"  ✓  {len(load_result.candles)} candles loaded.")
+
+    conn = init_db(cfg.db_path)
+
+    click.echo(f"\n  Samples (baseline + single-agent): {cfg.compare_n_samples}")
+    click.echo(f"  LLM budget (single + multi):       {cfg.compare_llm_budget} calls")
+    click.echo(f"  Model:                             {cfg.default_model}")
+
+    # ── Run comparison ─────────────────────────────────────────────────────────
+    click.echo(f"\n[2/5] Running baseline (random grid search) ...")
+    runner = ComparisonRunner(cfg, load_result.candles, conn)
+
+    # Run baseline first for a quick progress indication
+    from lab.evaluation.baseline import BaselineEvaluator
+    baseline_result = BaselineEvaluator(load_result.candles).run(n_samples=cfg.compare_n_samples)
+    click.echo(
+        f"  ✓  {baseline_result.n_samples} samples, "
+        f"{baseline_result.significant_count} significant findings, "
+        f"best p={baseline_result.best_p_value:.4f}"
+    )
+
+    click.echo(f"\n[3/5] Running single-agent ({cfg.compare_n_samples} runs, budget={cfg.compare_llm_budget}) ...")
+    from lab.evaluation.single_agent import SingleAgentRunner
+    single_runner = SingleAgentRunner(cfg, load_result.candles, budget=cfg.compare_llm_budget)
+    try:
+        single_result = single_runner.run(n_runs=cfg.compare_n_samples)
+    except Exception as exc:
+        _error(
+            f"Single-agent evaluation failed: {exc}\n"
+            "  Is Ollama running?  Start it with: ollama serve"
+        )
+        sys.exit(1)
+
+    click.echo(
+        f"  ✓  {single_result.n_runs} runs, "
+        f"{single_result.significant_count} significant findings, "
+        f"{single_result.total_calls_used} calls"
+    )
+
+    click.echo(f"\n[4/5] Running multi-agent CampaignRunner (budget={cfg.compare_llm_budget}) ...")
+    from lab.campaign.runner import CampaignRunner as _CR
+    from lab.config import LabConfig as _LC
+    multi_cfg = cfg.model_copy(update={"max_campaign_calls": cfg.compare_llm_budget})
+    multi_runner = _CR(multi_cfg, load_result.candles, conn)
+    try:
+        multi_result = multi_runner.run()
+    except Exception as exc:
+        _error(
+            f"Multi-agent evaluation failed: {exc}\n"
+            "  Is Ollama running?  Start it with: ollama serve"
+        )
+        sys.exit(1)
+
+    click.echo(
+        f"  ✓  {multi_result.runs_completed} runs, "
+        f"{multi_result.total_calls_used} calls, "
+        f"status: {multi_result.status}"
+    )
+
+    # ── Build and persist result ───────────────────────────────────────────────
+    from lab.evaluation.runner import ComparisonResult as _CR2
+    result = _CR2(
+        comparison_id=str(uuid.uuid4()),
+        created_at=now_iso(),
+        n_samples=cfg.compare_n_samples,
+        llm_budget=cfg.compare_llm_budget,
+        baseline=baseline_result,
+        single_agent=single_result,
+        multi_agent=multi_result,
+    )
+
+    click.echo(f"\n[5/5] Persisting comparison to database ...")
+    d = result.to_dict()
+    with conn:
+        save_comparison(conn, Comparison(
+            id=result.comparison_id,
+            created_at=result.created_at,
+            n_samples=result.n_samples,
+            llm_budget=result.llm_budget,
+            baseline_json=d["baseline"],
+            single_json=d["single_agent"],
+            multi_json=d["multi_agent"],
+            completed_at=now_iso(),
+        ))
+
+    _print_comparison_summary(result)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
