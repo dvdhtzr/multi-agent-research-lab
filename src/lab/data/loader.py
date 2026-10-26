@@ -2,7 +2,7 @@
 OHLCV CSV loader and data validation.
 
 The CSV format expected is:
-    timestamp,open,high,low,close,volume
+    Timestamp,Open,High,Low,Close,Volume
     2023-01-02 09:30:00,450.12,450.45,449.98,450.23,45231
 
 Timestamps must be parseable by datetime.fromisoformat().
@@ -68,7 +68,7 @@ class LoadResult(NamedTuple):
 # Public interface
 # ─────────────────────────────────────────────────────────────────────────────
 
-REQUIRED_COLUMNS = {"timestamp", "open", "high", "low", "close", "volume"}
+REQUIRED_COLUMNS = {"Timestamp", "Open", "High", "Low", "Close", "Volume"}
 
 
 def load_csv(path: Path, strict: bool = False) -> LoadResult:
@@ -155,16 +155,16 @@ def validate_partition_size(candles: list[OHLCVCandle], min_candles: int = 50) -
 def _parse_row(row: dict[str, str], line_number: int) -> OHLCVCandle:
     """Parse one CSV row into an OHLCVCandle, raising ValueError on bad data."""
     try:
-        timestamp = datetime.fromisoformat(row["timestamp"].strip())
+        timestamp = datetime.fromisoformat(row["Timestamp"].strip())
     except ValueError as exc:
-        raise ValueError(f"unparseable timestamp '{row['timestamp']}': {exc}") from exc
+        raise ValueError(f"unparseable timestamp '{row['Timestamp']}': {exc}") from exc
 
     try:
-        open_ = float(row["open"])
-        high = float(row["high"])
-        low = float(row["low"])
-        close = float(row["close"])
-        volume = float(row["volume"])
+        open_ = float(row["Open"])
+        high = float(row["High"])
+        low = float(row["Low"])
+        close = float(row["Close"])
+        volume = float(row["Volume"])
     except ValueError as exc:
         raise ValueError(f"non-numeric price/volume field: {exc}") from exc
 

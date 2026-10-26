@@ -92,7 +92,7 @@ def write_synthetic_csv(candles: list[OHLCVCandle], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["timestamp", "open", "high", "low", "close", "volume"])
+        writer.writerow(["Timestamp", "Open", "High", "Low", "Close", "Volume"])
         for c in candles:
             writer.writerow([
                 c.timestamp.isoformat(sep=" "),

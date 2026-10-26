@@ -37,7 +37,7 @@ def _write_temp_csv(content: str) -> Path:
 
 
 VALID_CSV = """\
-timestamp,open,high,low,close,volume
+Timestamp,Open,High,Low,Close,Volume
 2023-01-02 09:30:00,450.10,450.50,449.90,450.23,45000
 2023-01-02 09:31:00,450.23,450.80,450.00,450.55,32000
 2023-01-02 09:32:00,450.55,451.00,450.40,450.88,28000
@@ -86,7 +86,7 @@ def test_missing_file_raises_file_not_found():
 
 
 def test_missing_column_raises_value_error():
-    bad_csv = "timestamp,open,high,low,close\n2023-01-02 09:30:00,1,2,0,1\n"
+    bad_csv = "Timestamp,Open,High,Low,Close\n2023-01-02 09:30:00,1,2,0,1\n"
     path = _write_temp_csv(bad_csv)
     with pytest.raises(ValueError, match="missing required columns"):
         load_csv(path)
@@ -94,7 +94,7 @@ def test_missing_column_raises_value_error():
 
 def test_non_numeric_price_is_skipped_by_default():
     bad_csv = (
-        "timestamp,open,high,low,close,volume\n"
+        "Timestamp,Open,High,Low,Close,Volume\n"
         "2023-01-02 09:30:00,NOT_A_NUMBER,450.50,449.90,450.23,45000\n"
         "2023-01-02 09:31:00,450.23,450.80,450.00,450.55,32000\n"
     )
@@ -106,7 +106,7 @@ def test_non_numeric_price_is_skipped_by_default():
 
 def test_non_numeric_price_raises_in_strict_mode():
     bad_csv = (
-        "timestamp,open,high,low,close,volume\n"
+        "Timestamp,Open,High,Low,Close,Volume\n"
         "2023-01-02 09:30:00,NOT_A_NUMBER,450.50,449.90,450.23,45000\n"
     )
     path = _write_temp_csv(bad_csv)
@@ -116,7 +116,7 @@ def test_non_numeric_price_raises_in_strict_mode():
 
 def test_bad_timestamp_is_skipped():
     bad_csv = (
-        "timestamp,open,high,low,close,volume\n"
+        "Timestamp,Open,High,Low,Close,Volume\n"
         "NOT-A-DATE,450.10,450.50,449.90,450.23,45000\n"
         "2023-01-02 09:31:00,450.23,450.80,450.00,450.55,32000\n"
     )
@@ -129,7 +129,7 @@ def test_bad_timestamp_is_skipped():
 def test_high_less_than_low_is_skipped():
     # high=449.00 < low=450.50 — invalid OHLCV
     bad_csv = (
-        "timestamp,open,high,low,close,volume\n"
+        "Timestamp,Open,High,Low,Close,Volume\n"
         "2023-01-02 09:30:00,450.10,449.00,450.50,450.23,45000\n"
         "2023-01-02 09:31:00,450.23,450.80,450.00,450.55,32000\n"
     )
@@ -141,7 +141,7 @@ def test_high_less_than_low_is_skipped():
 
 def test_out_of_order_timestamps_raise_value_error():
     reversed_csv = (
-        "timestamp,open,high,low,close,volume\n"
+        "Timestamp,Open,High,Low,Close,Volume\n"
         "2023-01-02 09:32:00,450.55,451.00,450.40,450.88,28000\n"
         "2023-01-02 09:30:00,450.10,450.50,449.90,450.23,45000\n"
     )
